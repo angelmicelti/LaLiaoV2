@@ -943,6 +943,7 @@ let previousViewBeforeConfig = null;  // vista desde la que se entró a Configur
 let npFormDraft = null;       // borrador del formulario de nuevo parte al navegar a Configuración
 let selectedRole = null;      // rol con el que el usuario ha elegido entrar (admin puede elegir admin/tutor/profesor, tutor puede elegir tutor/profesor, profesor entra siempre como profesor)
 let manualLoginAttempted = false;  // true solo cuando el usuario pulsa "Entrar" manualmente; evita mostrar errores de permisos durante el signOut forzado del arranque
+let loginShown = false;  // true cuando la pantalla de login ya se ha mostrado (evita duplicados)
 
 /* ===== Utility helpers ===== */
 const $ = (id) => document.getElementById(id);
@@ -1098,6 +1099,7 @@ onAuthStateChanged(auth, async (user) => {
     $('profileSelectScreen').classList.add('hidden');
     $('loginScreen').classList.remove('hidden');
     $('loadingScreen').style.display = 'none';
+    loginShown = true;
     // Restaurar el botón de login por si quedó en estado "Entrando..." de un login anterior
     resetLoginButton();
     // Limpiar campos de usuario y contraseña
@@ -4976,37 +4978,7 @@ window.generarPDFProfesorTodosPartesCompletos = async () => {
       nombresUsados[filename] = 1;
     }
 
-    const fullHtml = `<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<title>${filename}</title>
-<style>
-@page { size: A4; margin: 15mm; }
-body { font-family: 'Segoe UI', system-ui, -apple-system, Roboto, Arial, sans-serif; color: #1f2933; margin: 0; padding: 0; }
-img { max-width: 100%; }
-table { width: 100%; border-collapse: collapse; }
-</style>
-</head>
-<body>
-${htmlContent}
-
-<script>
-</script>
-
-<script>
-if('serviceWorker' in navigator){
-  window.addEventListener('load', function(){
-    navigator.serviceWorker.register('sw.js').then(function(reg){
-      console.log('SW registered:', reg.scope);
-    }).catch(function(err){
-      console.log('SW registration failed:', err);
-    });
-  });
-}
-</script>
-</body>
-</html>`;
+    const fullHtml = '<!DOCTYPE html>\n<html lang="es">\n<head>\n<meta charset="UTF-8">\n<title>' + filename + '</title>\n<style>\n@page { size: A4; margin: 15mm; }\nbody { font-family: sans-serif; color: #1f2933; margin: 0; padding: 0; }\nimg { max-width: 100%; }\ntable { width: 100%; border-collapse: collapse; }\n</style>\n</head>\n<body>\n' + htmlContent + '\n</body>\n</html>';
 
     const blob = new Blob([fullHtml], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
@@ -5624,43 +5596,21 @@ try{
   signOut(auth).catch(() => {});
 }catch(_){}
 
-// Hide loading after init
-setTimeout(() => {
-  if(!currentUser){
-    $('loadingScreen').style.display = 'none';
-    $('loginScreen').classList.remove('hidden');
-    // Comprobar si hace falta crear el primer administrador (bootstrap)
-    checkBootstrapNeeded();
-  }
-}, 1500);
-
-/* ===== PWA: Service Worker registration (best-effort) ===== */
-// Register service worker from a Blob URL — works in some browsers (e.g., Firefox, Chrome on Android via blob:).
-// On iOS, "Add to Home Screen" works via the manifest + meta tags even without a SW.
-if('serviceWorker' in navigator){
-  try{
-    const swCode = `
-      const CACHE='convivencia-iesvdv-v1';
-      self.addEventListener('install', e => { self.skipWaiting(); });
-      self.addEventListener('activate', e => { e.waitUntil(self.clients.claim()); });
-      self.addEventListener('fetch', e => {
-        e.respondWith(
-          fetch(e.request).then(resp => {
-            // Cache successful GET responses (same-origin only)
-            if(e.request.method === 'GET' && resp.ok && new URL(e.request.url).origin === self.location.origin){
-              const copy = resp.clone();
-              caches.open(CACHE).then(c => c.put(e.request, copy)).catch(()=>{});
-            }
-            return resp;
-          }).catch(() => caches.match(e.request))
-        );
-      });
-    `;
-    const blob = new Blob([swCode], {type:'application/javascript'});
-    const swUrl = URL.createObjectURL(blob);
-    navigator.serviceWorker.register(swUrl).catch(err => console.log('SW registration skipped:', err.message));
-  }catch(e){ console.log('SW not available:', e); }
+// Mostrar la pantalla de login tras un breve tiempo (o antes si onAuthStateChanged ya disparó)
+function showLoginScreenIfNeeded(){
+  if(loginShown || currentUser) return;
+  loginShown = true;
+  $('loadingScreen').style.display = 'none';
+  $('loginScreen').classList.remove('hidden');
+  resetLoginButton();
+  checkBootstrapNeeded();
 }
+
+// Timeout de seguridad: si en 2.5s no hemos mostrado el login, forzarlo
+setTimeout(showLoginScreenIfNeeded, 2500);
+
+/* ===== PWA: Service Worker registration ===== */
+// El SW se registra desde el script externo sw.js (no desde blob URL)
 
 </script>
 
