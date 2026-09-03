@@ -906,6 +906,26 @@ const getCurrentCursoByDate = () => {
     return `${year-1}-${year}`;
   }
 };
+/* Curso escolar de un parte:
+ * - Si trae cursoEscolar, se usa ese.
+ * - Si no (partes anteriores a ese campo), se infiere de la fecha del incidente.
+ * - Sin fecha ni curso, se asume el curso de partida (CURSO_INICIAL). */
+const parteCursoEscolar = (p) => {
+  if(p && p.cursoEscolar) return p.cursoEscolar;
+  if(p && p.fechaIncidente){
+    const d = new Date(p.fechaIncidente);
+    if(!isNaN(d.getTime())){
+      const y = d.getFullYear();
+      return d.getMonth() + 1 >= 9 ? `${y}-${y+1}` : `${y-1}-${y}`;
+    }
+  }
+  return CURSO_INICIAL;
+};
+/* Curso activo efectivo (configuración o, en su defecto, el de hoy) */
+const cursoActivoActual = () => cachedCursoActivo || getCurrentCursoByDate();
+/* ¿Pertenece el parte al curso indicado? — aislamiento estricto entre cursos */
+const esParteDelCurso = (p, curso) => parteCursoEscolar(p) === curso;
+
 /* Genera la etiqueta "YYYY-YYYY" a partir del año de inicio */
 const cursoFromYear = (year) => `${year}-${parseInt(year)+1}`;
 /* Genera las fechas de inicio (1 sept) y fin (31 ago) de un curso */
@@ -1950,7 +1970,7 @@ function renderDashboard(c){
   const effRole = getEffectiveRole();
   const isAdmin = effRole === 'admin';
   const isTutor = effRole === 'tutor';
-  const myPartes = cachedPartes.filter(p => p.profesorId === currentUserUid);
+  const myPartes = cachedPartes.filter(p => p.profesorId === currentUserUid && esParteDelCurso(p, cursoActivoActual()));
   const openPartes = myPartes.filter(p => p.estado !== 'cerrado');
   const today = new Date().toDateString();
   const todayPartes = myPartes.filter(p => {
@@ -1961,7 +1981,7 @@ function renderDashboard(c){
   let tutoriaPartes = [];
   const effTutoriaGrupo = getEffectiveTutoriaGrupo();
   if(isTutor && effTutoriaGrupo){
-    tutoriaPartes = cachedPartes.filter(p => p.grupo === effTutoriaGrupo);
+    tutoriaPartes = cachedPartes.filter(p => p.grupo === effTutoriaGrupo && esParteDelCurso(p, cursoActivoActual()));
   }
 
   c.innerHTML = `
@@ -2451,10 +2471,10 @@ window.openNuevoParte = () => {
 
 /* ===== Mis Partes ===== */
 function renderMisPartes(c){
-  const myPartes = cachedPartes.filter(p => p.profesorId === currentUserUid);
+  const myPartes = cachedPartes.filter(p => p.profesorId === currentUserUid && esParteDelCurso(p, cursoActivoActual()));
   c.innerHTML = `
     <div class="page-title">Mis partes</div>
-    <div class="page-subtitle">Partes de incidencias que has registrado (${myPartes.length})</div>
+    <div class="page-subtitle">Partes de incidencias que has registrado · Curso ${escapeHtml(cursoActivoActual())} (${myPartes.length})</div>
     <div class="toolbar">
       <div class="search">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -2479,7 +2499,7 @@ window.filterMis = () => {
   const q = ($('searchMis')?.value||'').toLowerCase();
   const t = $('filterTipoMis')?.value||'';
   const e = $('filterEstadoMis')?.value||'';
-  let list = cachedPartes.filter(p => p.profesorId === currentUserUid);
+  let list = cachedPartes.filter(p => p.profesorId === currentUserUid && esParteDelCurso(p, cursoActivoActual()));
   if(q) list = list.filter(p => (p.alumnoNombre||'').toLowerCase().includes(q) || (p.conductaTexto||'').toLowerCase().includes(q) || (p.conductaId||'').toLowerCase().includes(q));
   if(t) list = list.filter(p => p.tipo === t);
   if(e) list = list.filter(p => p.estado === e);
@@ -2510,10 +2530,10 @@ function renderPartesTutoria(c){
       </div>`;
     return;
   }
-  const tutoriaPartes = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo));
+  const tutoriaPartes = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && esParteDelCurso(p, cursoActivoActual()));
   c.innerHTML = `
     <div class="page-title">Partes de mi tutoría</div>
-    <div class="page-subtitle">Grupo ${escapeHtml(tutoriaGrupo)} · ${tutoriaPartes.length} partes en total</div>
+    <div class="page-subtitle">Grupo ${escapeHtml(tutoriaGrupo)} · ${tutoriaPartes.length} partes en total · Curso ${escapeHtml(cursoActivoActual())}</div>
     <div class="toolbar">
       <div class="search">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -2726,7 +2746,7 @@ window.filterTut = () => {
   const tutoriaGrupo = getEffectiveTutoriaGrupo();
   const q = ($('searchTut')?.value||'').toLowerCase();
   const t = $('filterTipoTut')?.value||'';
-  let list = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo));
+  let list = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && esParteDelCurso(p, cursoActivoActual()));
   if(q) list = list.filter(p => (p.alumnoNombre||'').toLowerCase().includes(q));
   if(t) list = list.filter(p => p.tipo === t);
   const el = $('tutPartesList');
@@ -2741,7 +2761,7 @@ window.filterTut = () => {
 function renderTodosPartes(c){
   c.innerHTML = `
     <div class="page-title">Todos los partes</div>
-    <div class="page-subtitle">${cachedPartes.length} partes en el centro</div>
+    <div class="page-subtitle">${cachedPartes.filter(p => esParteDelCurso(p, cursoActivoActual())).length} partes en el centro · Curso ${escapeHtml(cursoActivoActual())}</div>
     <div class="toolbar">
       <div class="search">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -2771,7 +2791,7 @@ window.filterAll = () => {
   const t = $('filterTipoAll')?.value||'';
   const g = $('filterGrupoAll')?.value||'';
   const e = $('filterEstadoAll')?.value||'';
-  let list = [...cachedPartes];
+  let list = cachedPartes.filter(p => esParteDelCurso(p, cursoActivoActual()));
   if(q) list = list.filter(p => (p.alumnoNombre||'').toLowerCase().includes(q) || (p.profesorNombre||'').toLowerCase().includes(q) || (p.conductaId||'').toLowerCase().includes(q) || (p.conductaTexto||'').toLowerCase().includes(q));
   if(t) list = list.filter(p => p.tipo === t);
   if(g) list = list.filter(p => p.grupo === g);
@@ -3454,7 +3474,7 @@ window.eliminarGrupoCompletoByName = (grupo) => {
 window.verPartesAlumno = (alumnoId) => {
   const s = cachedStudents.find(x => x.id === alumnoId);
   if(!s) return;
-  const partes = cachedPartes.filter(p => p.alumnoId === alumnoId);
+  const partes = cachedPartes.filter(p => p.alumnoId === alumnoId && esParteDelCurso(p, cursoActivoActual()));
   const body = partes.length === 0 ? `<div class="empty-state"><p>Este alumno/a no tiene partes registrados.</p></div>` : partes.map(p => renderParteCard(p)).join('');
   openModal(`Partes de ${s.nombre}`, `<div style="margin-bottom:8px"><span class="chip primary">${escapeHtml(s.grupo||'')}</span> <span class="chip">${escapeHtml(s.curso||'')}</span></div>${body}`);
 };
@@ -3923,6 +3943,15 @@ window.importarUsuariosExcel = async () => {
       tutoria: String(findCol(r, ['Tutoría','Tutoria','Grupo','tutoría','tutoria','grupo'])).trim(),
     })).filter(u => u.nombre && u.username && u.pass);
 
+    /* Normalizar sinónimos de rol escritos en el Excel (p. ej. "Administrador" -> "admin").
+       Así la importación no falla por variantes naturales en español del nombre del rol. */
+    const ROLE_ALIASES = {
+      'administrador': 'admin', 'admin': 'admin',
+      'profesor': 'profesor', 'profesora': 'profesor',
+      'tutor': 'tutor', 'tutora': 'tutor'
+    };
+    usuarios.forEach(u => { if(ROLE_ALIASES[u.rol]) u.rol = ROLE_ALIASES[u.rol]; });
+
     if(usuarios.length === 0){
       resultDiv.innerHTML = '<div style="padding:10px;color:var(--c-danger)">No se encontraron usuarios válidos.</div>';
       return;
@@ -3934,7 +3963,7 @@ window.importarUsuariosExcel = async () => {
     usuarios.forEach((u, i) => {
       if(!USERNAME_REGEX.test(u.username)) errores.push(`Fila ${i+1}: usuario "${u.username}" no válido`);
       if(u.pass.length < 6) errores.push(`Fila ${i+1}: contraseña demasiado corta`);
-      if(u.rol && !['profesor','tutor','admin'].includes(u.rol)) errores.push(`Fila ${i+1}: rol "${u.rol}" no válido`);
+      if(u.rol && !['profesor','tutor','admin'].includes(u.rol)) errores.push(`Fila ${i+1}: rol "${u.rol}" no válido (usa: profesor, tutor o admin)`);
       if(u.rol === 'tutor' && !u.tutoria) errores.push(`Fila ${i+1}: rol tutor sin grupo de tutoría`);
     });
     if(errores.length > 0){
@@ -4651,8 +4680,8 @@ const sanitizeFilename = (text) => {
 /* === INFORMES DEL PROFESOR === */
 function renderInformesProfesor(c, cursoActivo){
   const myPartes = cachedPartes.filter(p => p.profesorId === currentUserUid);
-  // Filtrar por curso escolar si existe el campo
-  const partesCurso = myPartes.filter(p => !p.cursoEscolar || p.cursoEscolar === cursoActivo);
+  // Aislamiento estricto por curso: los partes antiguos sin campo se infieren por fecha del incidente
+  const partesCurso = myPartes.filter(p => esParteDelCurso(p, cursoActivo));
 
   // Alumnos únicos a los que ha puesto partes
   const alumnosUnicos = [...new Set(partesCurso.map(p => p.alumnoNombre))].sort();
@@ -4724,7 +4753,7 @@ function renderInformesProfesor(c, cursoActivo){
 
 window.generarPDFProfesorGeneral = () => {
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const myPartes = cachedPartes.filter(p => p.profesorId === currentUserUid && (!p.cursoEscolar || p.cursoEscolar === cursoActivo));
+  const myPartes = cachedPartes.filter(p => p.profesorId === currentUserUid && (esParteDelCurso(p, cursoActivo)));
   const abiertos = myPartes.filter(p=>p.estado!=='cerrado').length;
   const cerrados = myPartes.filter(p=>p.estado==='cerrado').length;
   const ccn = myPartes.filter(p=>p.tipo==='CCNC').length;
@@ -4773,7 +4802,7 @@ window.infProfAlumnoChange = () => {
   const div = $('infProfAlumnoResult');
   if(!alumno){ div.innerHTML = ''; return; }
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && p.alumnoNombre === alumno && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && p.alumnoNombre === alumno && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
   div.innerHTML = `
     <div style="margin-bottom:8px"><strong>${partes.length} partes</strong> para ${escapeHtml(alumno)}</div>
@@ -4790,7 +4819,7 @@ window.infProfAlumnoSetup = () => {
 
 window.generarPDFProfesorAlumno = (alumno) => {
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && p.alumnoNombre === alumno && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && p.alumnoNombre === alumno && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
   const ccn = partes.filter(p=>p.tipo==='CCNC').length;
   const cgpc = partes.filter(p=>p.tipo==='CGPC').length;
@@ -4825,7 +4854,7 @@ window.infProfGrupoChange = () => {
   const div = $('infProfGrupoResult');
   if(!grupo){ div.innerHTML = ''; return; }
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && p.grupo === grupo && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && p.grupo === grupo && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
   div.innerHTML = `
     <div style="margin-bottom:8px"><strong>${partes.length} partes</strong> en el grupo ${escapeHtml(grupo)}</div>
@@ -4841,7 +4870,7 @@ window.infProfGrupoSetup = () => {
 
 window.generarPDFProfesorGrupo = (grupo) => {
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && p.grupo === grupo && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && p.grupo === grupo && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
   // Por alumno
   const porAlumno = {};
@@ -4964,7 +4993,7 @@ window.generarPDFProfesorParteCompleto = () => {
 
 window.generarPDFProfesorTodosPartesCompletos = async () => {
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
   if(partes.length === 0){ toast('No tienes partes en este curso','error'); return; }
 
@@ -5010,7 +5039,7 @@ function renderInformesTutor(c, cursoActivo){
     c.innerHTML = `<div class="page-title">Informes</div><div class="empty-state"><p>No tienes grupo de tutoría asignado.</p></div>`;
     return;
   }
-  const partesTutoria = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && (!p.cursoEscolar || p.cursoEscolar === cursoActivo));
+  const partesTutoria = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && (esParteDelCurso(p, cursoActivo)));
   const alumnosUnicos = [...new Set(partesTutoria.map(p => p.alumnoNombre))].sort();
 
   c.innerHTML = `
@@ -5047,7 +5076,7 @@ function renderInformesTutor(c, cursoActivo){
 window.generarPDFTutorGeneral = () => {
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
   const tutoriaGrupo = getEffectiveTutoriaGrupo();
-  const partes = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && (!p.cursoEscolar || p.cursoEscolar === cursoActivo));
+  const partes = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && (esParteDelCurso(p, cursoActivo)));
   const porAlumno = {};
   partes.forEach(p => { porAlumno[p.alumnoNombre] = (porAlumno[p.alumnoNombre]||0)+1; });
   const porConducta = {};
@@ -5105,7 +5134,7 @@ window.infTutorAlumnoChange = () => {
   if(!alumno){ div.innerHTML = ''; return; }
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
   const tutoriaGrupo = getEffectiveTutoriaGrupo();
-  const partes = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && p.alumnoNombre === alumno && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && p.alumnoNombre === alumno && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
   div.innerHTML = `
     <div style="margin-bottom:8px"><strong>${partes.length} partes</strong> para ${escapeHtml(alumno)}</div>
@@ -5122,7 +5151,7 @@ window.infTutorAlumnoSetup = () => {
 window.generarPDFTutorAlumno = (alumno) => {
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
   const tutoriaGrupo = getEffectiveTutoriaGrupo();
-  const partes = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && p.alumnoNombre === alumno && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && p.alumnoNombre === alumno && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
 
   $('printContainer').innerHTML = `
@@ -5150,7 +5179,7 @@ window.generarPDFTutorAlumno = (alumno) => {
 
 /* === INFORMES DEL ADMIN === */
 function renderInformesAdmin(c, cursoActivo){
-  const todasPartes = cachedPartes.filter(p => !p.cursoEscolar || p.cursoEscolar === cursoActivo);
+  const todasPartes = cachedPartes.filter(p => esParteDelCurso(p, cursoActivo));
   const alumnosUnicos = [...new Set(todasPartes.map(p => p.alumnoNombre))].sort();
   const gruposUnicos = [...new Set(todasPartes.map(p => p.grupo).filter(Boolean))].sort();
   const profesoresUnicos = [...new Set(todasPartes.map(p => p.profesorNombre).filter(Boolean))].sort();
@@ -5214,7 +5243,7 @@ function renderInformesAdmin(c, cursoActivo){
 
 window.generarPDFAdminGeneral = () => {
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => !p.cursoEscolar || p.cursoEscolar === cursoActivo);
+  const partes = cachedPartes.filter(p => esParteDelCurso(p, cursoActivo));
   const porAlumno = {}; partes.forEach(p => { porAlumno[p.alumnoNombre] = (porAlumno[p.alumnoNombre]||0)+1; });
   const porConducta = {}; partes.forEach(p => { porConducta[p.conductaId] = (porConducta[p.conductaId]||0)+1; });
   const porGrupo = {}; partes.forEach(p => { if(p.grupo) porGrupo[p.grupo] = (porGrupo[p.grupo]||0)+1; });
@@ -5307,7 +5336,7 @@ window.infAdminAlumnoChange = () => {
   const div = $('infAdminAlumnoResult');
   if(!alumno){ div.innerHTML = ''; return; }
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.alumnoNombre === alumno && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => p.alumnoNombre === alumno && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
   div.innerHTML = `
     <div style="margin-bottom:8px"><strong>${partes.length} partes</strong> para ${escapeHtml(alumno)}</div>
@@ -5323,7 +5352,7 @@ window.infAdminAlumnoSetup = () => {
 
 window.generarPDFAdminAlumno = (alumno) => {
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.alumnoNombre === alumno && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => p.alumnoNombre === alumno && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
   const grupo = partes[0]?.grupo || '—';
 
@@ -5361,7 +5390,7 @@ window.infAdminGrupoChange = () => {
   const div = $('infAdminGrupoResult');
   if(!grupo){ div.innerHTML = ''; return; }
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.grupo === grupo && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => p.grupo === grupo && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
   div.innerHTML = `
     <div style="margin-bottom:8px"><strong>${partes.length} partes</strong> en el grupo ${escapeHtml(grupo)}</div>
@@ -5377,7 +5406,7 @@ window.infAdminGrupoSetup = () => {
 
 window.generarPDFAdminGrupo = (grupo) => {
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.grupo === grupo && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => p.grupo === grupo && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
   const porAlumno = {}; partes.forEach(p => { porAlumno[p.alumnoNombre] = (porAlumno[p.alumnoNombre]||0)+1; });
   const porProfesor = {}; partes.forEach(p => { porProfesor[p.profesorNombre||'—'] = (porProfesor[p.profesorNombre||'—']||0)+1; });
@@ -5425,7 +5454,7 @@ window.infAdminProfesorChange = () => {
   const div = $('infAdminProfesorResult');
   if(!profesor){ div.innerHTML = ''; return; }
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorNombre === profesor && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => p.profesorNombre === profesor && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
   div.innerHTML = `
     <div style="margin-bottom:8px"><strong>${partes.length} partes</strong> puestos por ${escapeHtml(profesor)}</div>
@@ -5441,7 +5470,7 @@ window.infAdminProfesorSetup = () => {
 
 window.generarPDFAdminProfesor = (profesor) => {
   const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorNombre === profesor && (!p.cursoEscolar || p.cursoEscolar === cursoActivo))
+  const partes = cachedPartes.filter(p => p.profesorNombre === profesor && (esParteDelCurso(p, cursoActivo)))
     .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
   const porAlumno = {}; partes.forEach(p => { porAlumno[p.alumnoNombre] = (porAlumno[p.alumnoNombre]||0)+1; });
   const porGrupo = {}; partes.forEach(p => { if(p.grupo) porGrupo[p.grupo] = (porGrupo[p.grupo]||0)+1; });
