@@ -425,7 +425,7 @@ input[type="date"].form-control,input[type="time"].form-control{min-height:44px}
   body{background:#fff;overflow:visible;position:static;width:auto;height:auto}
   #printContainer{display:block!important}
   #app{display:none!important}
-  @page{margin:12mm}
+  @page{size:A4;margin:12mm}
 }
 .form-hint{font-size:11.5px;color:var(--c-text-muted);margin-top:4px}
 .required{color:var(--c-danger)}
@@ -2970,12 +2970,16 @@ function renderTodosPartes(c){
         <option value="abierto">Abiertos</option>
         <option value="cerrado">Cerrados</option>
       </select>
+      <button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="generarPDFTodosPartes()" title="Genera un informe A4 en PDF con los partes que se muestran ahora mismo en pantalla (respeta la búsqueda y los filtros aplicados)">⬇️ Descargar PDF</button>
     </div>
     <div id="allPartesList"></div>
   `;
   filterAll();
 }
-window.filterAll = () => {
+/* Filtros de la barra de "Todos los partes": devuelve la lista que se
+ * muestra en pantalla. La usa también la exportación a PDF, para que el
+ * informe contenga exactamente lo que se ve en ese momento. */
+function todosPartesFiltrados(){
   const q = ($('searchAll')?.value||'').toLowerCase();
   const t = $('filterTipoAll')?.value||'';
   const g = $('filterGrupoAll')?.value||'';
@@ -2985,12 +2989,76 @@ window.filterAll = () => {
   if(t) list = list.filter(p => p.tipo === t);
   if(g) list = list.filter(p => p.grupo === g);
   if(e) list = list.filter(p => p.estado === e);
+  return list;
+}
+
+window.filterAll = () => {
+  const list = todosPartesFiltrados();
   const el = $('allPartesList');
   if(list.length === 0){
     el.innerHTML = `<div class="empty-state"><p>No hay partes que coincidan con el filtro.</p></div>`;
   } else {
     el.innerHTML = list.map(p => renderParteCard(p)).join('');
   }
+};
+
+/* "⬇️ Descargar PDF" de la pantalla Todos los partes: genera un informe
+ * A4 con el contenido que se muestra en ese momento en la pantalla
+ * (respeta la búsqueda y los filtros de tipo/grupo/estado activos). */
+window.generarPDFTodosPartes = () => {
+  const cursoActivo = cursoActivoActual();
+  const list = todosPartesFiltrados()
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
+  if(list.length === 0){ toast('No hay partes que coincidan con el filtro: no se puede exportar un informe vacío.','error'); return; }
+
+  // Resumen de los filtros aplicados (para la cabecera y el nombre del archivo)
+  const q = ($('searchAll')?.value||'').trim();
+  const t = $('filterTipoAll')?.value||'';
+  const g = $('filterGrupoAll')?.value||'';
+  const e = $('filterEstadoAll')?.value||'';
+  const filtros = [];
+  if(q) filtros.push(`Búsqueda: "${q}"`);
+  if(t) filtros.push(`Tipo: ${t}`);
+  if(g) filtros.push(`Grupo: ${g}`);
+  if(e) filtros.push(`Estado: ${e === 'cerrado' ? 'Cerrados' : 'Abiertos'}`);
+  const filtrosTexto = filtros.length ? filtros.join(' · ') : 'Ninguno (todos los partes del curso)';
+
+  const grupos = [...new Set(list.map(p => p.grupo).filter(Boolean))];
+  const alumnos = [...new Set(list.map(p => p.alumnoNombre).filter(Boolean))];
+  const profesores = [...new Set(list.map(p => p.profesorNombre).filter(Boolean))];
+
+  $('printContainer').innerHTML = `
+    ${printHeader('Todos los partes', `${list.length} parte${list.length===1?'':'s'} en el centro`, `Curso ${cursoActivo} · Filtros: ${filtrosTexto} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
+    <div class="print-section">
+      <h3>Resumen del listado</h3>
+      <div class="stat-grid">
+        ${printStatBox(list.length, 'Total partes')}
+        ${printStatBox(list.filter(p=>p.estado!=='cerrado').length, 'Abiertos')}
+        ${printStatBox(list.filter(p=>p.estado==='cerrado').length, 'Cerrados')}
+        ${printStatBox(list.filter(p=>p.tipo==='CCNC').length, 'CCNC')}
+        ${printStatBox(list.filter(p=>p.tipo==='CGPC').length, 'CGPC')}
+        ${printStatBox(grupos.length, 'Grupos')}
+        ${printStatBox(alumnos.length, 'Alumnos')}
+        ${printStatBox(profesores.length, 'Profesores')}
+      </div>
+    </div>
+    <div class="print-section">
+      <h3>Filtros aplicados</h3>
+      <div style="font-size:12px;color:#52606d">${escapeHtml(filtrosTexto)}</div>
+    </div>
+    <div class="print-section">
+      <h3>Listado de partes (orden cronológico inverso)</h3>
+      ${list.map(p => printParteItem(p)).join('')}
+    </div>
+  `;
+
+  // Nombre de archivo con información del contenido: curso + filtros activos
+  let filename = `Todos_los_partes_${cursoActivo}`;
+  if(q) filename += `_busqueda-${sanitizeFilename(q)}`;
+  if(t) filename += `_${t}`;
+  if(g) filename += `_grupo-${sanitizeFilename(g)}`;
+  if(e) filename += `_${e === 'cerrado' ? 'cerrados' : 'abiertos'}`;
+  imprimirInforme(filename);
 };
 
 /* ===== Detalle del Parte ===== */
@@ -3125,7 +3193,7 @@ window.generarPDFParteDesdeDetalle = (parteId) => {
   $('printContainer').innerHTML = printParteCompleto(p, p.cursoEscolar || parteCursoEscolar(p));
   const nombreAlumno = sanitizeFilename(p.alumnoNombre || 'alumno');
   const fechaIncidente = fmtFecha(p.fechaIncidente).replace(/\//g, '-');
-  const filename = `Notificacion_${nombreAlumno}_${fechaIncidente}`;
+  const filename = `Notificacion_${sanitizeFilename(p.conductaId||'parte')}_${nombreAlumno}_${fechaIncidente}`;
   closeModal();
   imprimirInforme(filename);
 };
@@ -4913,6 +4981,19 @@ const informesPeriodoLabel = () => {
   return `${INFORMES_PERIODOS[informesFiltro.periodo]} (${fmtFecha(r.desde)} – ${fmtFecha(r.hasta)})`;
 };
 
+/* Etiqueta corta del período para el nombre de los archivos exportados:
+ * minúsculas, sin paréntesis y sin rangos largos. */
+const informesPeriodoFilename = () => {
+  const r = informesRango();
+  if(!r) return 'todo-el-curso';
+  if(informesFiltro.periodo === 'custom'){
+    const f = (ms) => { const d = new Date(ms); return String(d.getDate()).padStart(2,'0') + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + d.getFullYear(); };
+    return `del_${f(r.desde)}_al_${f(r.hasta)}`;
+  }
+  const nombres = { hoy:'hoy', '7d':'ultimos-7-dias', '15d':'ultimos-15-dias', semana:'semana-actual', mes:'mes-actual', mesAnt:'mes-anterior', trimestre:'trimestre-actual', trimestreAnt:'trimestre-anterior' };
+  return nombres[informesFiltro.periodo] || 'periodo';
+};
+
 /* Aplica los filtros de la vista (curso + período) a una lista de partes ya
  * acotada al ámbito del rol (profesor/tutor/admin). */
 function filtrarPartesInforme(list){
@@ -5192,9 +5273,15 @@ window.imprimirInforme = (filename) => {
 };
 
 /* Sanitiza un texto para usarlo como nombre de archivo:
- * elimina caracteres no válidos, reemplaza espacios por _ */
+ * elimina los caracteres prohibidos en nombres de archivo (\ / : * ? " < > |
+ * y caracteres de control), conserva acentos, eñes, guiones, puntos, comas
+ * y paréntesis, y une las palabras con _ */
 const sanitizeFilename = (text) => {
-  return (text||'').replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9 ]/g, '').trim().replace(/\s+/g, '_');
+  return (text||'')
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
 };
 
 /* === INFORMES DEL PROFESOR === */
@@ -5317,7 +5404,8 @@ window.generarPDFProfesorGeneral = () => {
       ${myPartes.sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0)).map(p => printParteItem(p)).join('')}
     </div>
   `;
-  imprimirInforme();
+  // Nombre de archivo con el contenido: informe + profesor + curso + período
+  imprimirInforme(`Informe_partes_${sanitizeFilename(currentUser.nombre||'profesor')}_${cursoActivo}_${informesPeriodoFilename()}`);
 };
 
 window.infProfAlumnoChange = () => {
@@ -5368,7 +5456,8 @@ window.generarPDFProfesorAlumno = (alumno) => {
       ${partes.map(p => printParteItem(p)).join('')}
     </div>
   `;
-  imprimirInforme();
+  // Nombre de archivo con el contenido: alumno + profesor + curso + período
+  imprimirInforme(`Informe_alumno_${sanitizeFilename(alumno)}_de_${sanitizeFilename(currentUser.nombre||'profesor')}_${cursoActivo}_${informesPeriodoFilename()}`);
 };
 
 window.infProfGrupoChange = () => {
@@ -5419,7 +5508,8 @@ window.generarPDFProfesorGrupo = (grupo) => {
       ${partes.map(p => printParteItem(p)).join('')}
     </div>
   `;
-  imprimirInforme();
+  // Nombre de archivo con el contenido: grupo + profesor + curso + período
+  imprimirInforme(`Informe_grupo_${sanitizeFilename(grupo)}_de_${sanitizeFilename(currentUser.nombre||'profesor')}_${cursoActivo}_${informesPeriodoFilename()}`);
 };
 
 /* === Parte completo para iPasen === */
@@ -5513,7 +5603,7 @@ window.generarPDFProfesorParteCompleto = () => {
   // Nombre de archivo: Notificacion_NombreDelAlumno_FechaDelIncidente
   const nombreAlumno = sanitizeFilename(p.alumnoNombre || 'alumno');
   const fechaIncidente = fmtFecha(p.fechaIncidente).replace(/\//g, '-');
-  const filename = `Notificacion_${nombreAlumno}_${fechaIncidente}`;
+  const filename = `Notificacion_${sanitizeFilename(p.conductaId||'parte')}_${nombreAlumno}_${fechaIncidente}`;
   imprimirInforme(filename);
 };
 
@@ -5530,7 +5620,7 @@ window.generarPDFProfesorTodosPartesCompletos = () => {
   // por lo que en la práctica solo llegaba el primer archivo.
   $('printContainer').innerHTML = partes.map(p => printParteCompleto(p, cursoActivo)).join('');
   const nombreProfesor = sanitizeFilename(currentUser.nombre || 'profesor');
-  imprimirInforme(`Notificaciones_${nombreProfesor}_${cursoActivo}`);
+  imprimirInforme(`Notificaciones_${nombreProfesor}_${cursoActivo}_${informesPeriodoFilename()}`);
 };
 
 /* === INFORMES DEL TUTOR === */
@@ -5631,7 +5721,8 @@ window.generarPDFTutorGeneral = () => {
       </tbody></table>
     </div>
   `;
-  imprimirInforme();
+  // Nombre de archivo con el contenido: tutoría + curso + período
+  imprimirInforme(`Informe_tutoria_${sanitizeFilename(tutoriaGrupo||'grupo')}_${cursoActivo}_${informesPeriodoFilename()}`);
 };
 
 window.infTutorAlumnoChange = () => {
@@ -5679,7 +5770,8 @@ window.generarPDFTutorAlumno = (alumno) => {
       ${partes.map(p => printParteItem(p)).join('')}
     </div>
   `;
-  imprimirInforme();
+  // Nombre de archivo con el contenido: alumno + tutoría + curso + período
+  imprimirInforme(`Informe_alumno_${sanitizeFilename(alumno)}_tutoria_${sanitizeFilename(tutoriaGrupo||'grupo')}_${cursoActivo}_${informesPeriodoFilename()}`);
 };
 
 /* === INFORMES DEL ADMIN === */
@@ -5842,7 +5934,8 @@ window.generarPDFAdminGeneral = () => {
       </tbody></table>
     </div>` : ''}
   `;
-  imprimirInforme();
+  // Nombre de archivo con el contenido: informe del centro + curso + período
+  imprimirInforme(`Informe_general_centro_${cursoActivo}_${informesPeriodoFilename()}`);
 };
 
 window.infAdminAlumnoChange = () => {
@@ -5868,6 +5961,7 @@ window.generarPDFAdminAlumno = (alumno) => {
   const partes = filtrarPartesInforme(cachedPartes.filter(p => p.alumnoNombre === alumno))
     .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   const grupo = partes[0]?.grupo || '—';
+  const grupoArchivo = sanitizeFilename(grupo !== '—' ? (grupo||'') : '');
 
   $('printContainer').innerHTML = `
     ${printHeader('Informe de alumno', `${alumno} · Grupo ${grupo}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
@@ -5895,7 +5989,8 @@ window.generarPDFAdminAlumno = (alumno) => {
       ${partes.map(p => printParteItem(p)).join('')}
     </div>
   `;
-  imprimirInforme();
+  // Nombre de archivo con el contenido: alumno + grupo + curso + período
+  imprimirInforme(`Informe_alumno_${sanitizeFilename(alumno)}_${grupoArchivo||'sin-grupo'}_${cursoActivo}_${informesPeriodoFilename()}`);
 };
 
 window.infAdminGrupoChange = () => {
@@ -5958,7 +6053,8 @@ window.generarPDFAdminGrupo = (grupo) => {
       ${partes.map(p => printParteItem(p)).join('')}
     </div>
   `;
-  imprimirInforme();
+  // Nombre de archivo con el contenido: grupo + curso + período
+  imprimirInforme(`Informe_grupo_${sanitizeFilename(grupo)||'sin-grupo'}_${cursoActivo}_${informesPeriodoFilename()}`);
 };
 
 window.infAdminProfesorChange = () => {
@@ -6018,7 +6114,8 @@ window.generarPDFAdminProfesor = (profesor) => {
       ${partes.map(p => printParteItem(p)).join('')}
     </div>
   `;
-  imprimirInforme();
+  // Nombre de archivo con el contenido: profesor + curso + período
+  imprimirInforme(`Informe_profesor_${sanitizeFilename(profesor)}_${cursoActivo}_${informesPeriodoFilename()}`);
 };
 
 /* ===== Notifications ===== */
