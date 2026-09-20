@@ -420,7 +420,7 @@ input[type="date"].form-control,input[type="time"].form-control{min-height:44px}
 
 /* ===== Print (para PDFs) ===== */
 @media print{
-  .app-header,.bottom-nav,.sidebar,.fab,.toolbar,.parte-actions,.modal-footer,.modal-overlay,.loading-screen,.login-card,#profileSelectScreen{display:none!important}
+  .app-header,.bottom-nav,.sidebar,.fab,.toolbar,.parte-actions,.modal-footer,.modal-overlay,.loading-screen,.login-card,#profileSelectScreen,#toast{display:none!important}
   .app-main{padding:0;max-width:100%}
   body{background:#fff;overflow:visible;position:static;width:auto;height:auto}
   #printContainer{display:block!important}
@@ -534,6 +534,9 @@ tbody tr:hover{background:#fafbfc}
 #printContainer .parte-item .pi-header{display:flex;justify-content:space-between;font-weight:600;font-size:12px;margin-bottom:4px}
 #printContainer .parte-item .pi-body{font-size:11px;color:#52606d}
 #printContainer .parte-item .pi-meta{font-size:10px;color:#7b8794;margin-top:4px}
+/* Evita la página en blanco final: el último parte de un documento
+ * (individual o combinado) no fuerza salto de página */
+#printContainer .parte-completo:last-child{page-break-after:auto!important}
 
 /* Helpers */
 .hidden{display:none!important}
@@ -912,12 +915,11 @@ const getCurrentCursoByDate = () => {
  * - Sin fecha ni curso, se asume el curso de partida (CURSO_INICIAL). */
 const parteCursoEscolar = (p) => {
   if(p && p.cursoEscolar) return p.cursoEscolar;
-  if(p && p.fechaIncidente){
-    const d = new Date(p.fechaIncidente);
-    if(!isNaN(d.getTime())){
-      const y = d.getFullYear();
-      return d.getMonth() + 1 >= 9 ? `${y}-${y+1}` : `${y-1}-${y}`;
-    }
+  const ts = fechaIncidenteTs(p);
+  if(ts !== null){
+    const d = new Date(ts);
+    const y = d.getFullYear();
+    return d.getMonth() + 1 >= 9 ? `${y}-${y+1}` : `${y-1}-${y}`;
   }
   return CURSO_INICIAL;
 };
@@ -925,6 +927,47 @@ const parteCursoEscolar = (p) => {
 const cursoActivoActual = () => cachedCursoActivo || getCurrentCursoByDate();
 /* ¿Pertenece el parte al curso indicado? — aislamiento estricto entre cursos */
 const esParteDelCurso = (p, curso) => parteCursoEscolar(p) === curso;
+
+/* Parsea una fecha de incidente en cualquier formato habitual:
+ * - número (ms desde epoch: el formato nativo de la app)
+ * - cadena ISO "YYYY-MM-DD" o "YYYY-MM-DDTHH:mm"
+ * - cadena en formato español "DD/MM/YYYY", "DD-MM-YYYY", "DD.MM.YYYY"
+ *   (también admite MM/DD si no es ambigua)
+ * - objeto Timestamp de Firebase ({seconds, nanoseconds} o con .toDate())
+ * - objeto Date
+ * Devuelve el tiempo en ms, o null si no se puede parsear. Es imprescindible
+ * para los partes introducidos a mano directamente en la base de datos. */
+const parseFechaIncidente = (v) => {
+  if(v === null || v === undefined || v === '') return null;
+  if(typeof v === 'number') return isNaN(v) ? null : v;
+  if(typeof v === 'object'){
+    if(typeof v.toDate === 'function'){ try{ return v.toDate().getTime(); }catch(e){ return null; } }
+    if(typeof v.seconds === 'number') return v.seconds * 1000 + Math.floor((v.nanoseconds||0)/1e6);
+    if(v instanceof Date) return isNaN(v.getTime()) ? null : v.getTime();
+    return null;
+  }
+  const s = String(v).trim();
+  if(/^\d{13}$/.test(s)) return parseInt(s, 10);         // ms como cadena
+  if(/^\d{10}$/.test(s)) return parseInt(s, 10) * 1000;   // segundos como cadena
+  let m = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(?:[T ](\d{1,2}):(\d{2}))?/);
+  if(m){
+    const d = new Date(+m[1], +m[2]-1, +m[3], +(m[4]||0), +(m[5]||0));
+    return isNaN(d.getTime()) ? null : d.getTime();
+  }
+  m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})(?:[T ](\d{1,2}):(\d{2}))?/);
+  if(m){
+    let dd = +m[1], mm = +m[2], yy = +m[3];
+    // Ambigüedad dd/mm vs mm/dd: si la primera parte no puede ser mes, es dd/mm
+    if(dd <= 12 && mm > 12){ const t = dd; dd = mm; mm = t; }
+    const d = new Date(yy, mm-1, dd, +(m[4]||0), +(m[5]||0));
+    return isNaN(d.getTime()) ? null : d.getTime();
+  }
+  const d = new Date(s); // último recurso
+  return isNaN(d.getTime()) ? null : d.getTime();
+};
+/* Marca de tiempo (ms) de la fecha del incidente de un parte, robusta al
+ * formato en que esté guardada. null si no se puede determinar. */
+const fechaIncidenteTs = (p) => (p && p.__fechaTs != null) ? p.__fechaTs : parseFechaIncidente(p && p.fechaIncidente);
 
 /* Genera la etiqueta "YYYY-YYYY" a partir del año de inicio */
 const cursoFromYear = (year) => `${year}-${parseInt(year)+1}`;
@@ -962,6 +1005,7 @@ let currentView = 'dashboard';
 let cachedStudents = [];      // local cache for selects
 let cachedUsers = {};
 let cachedPartes = [];
+let lastPartesSig = null;    // firma de los partes cargados: evita re-renders innecesarios
 let cachedNotifications = [];
 let cachedUbicaciones = [];   // lista de ubicaciones configurada por el admin
 let cachedCursos = [];        // lista de cursos escolares disponibles
@@ -1025,8 +1069,9 @@ const isRealAdmin = () => getRealRole() === 'admin';
  * el grupo que eligió en la pantalla de selección. */
 const getEffectiveTutoriaGrupo = () => {
   if(!currentUser) return null;
-  // Si entró como tutor y es admin real, usar el grupo temporal elegido
-  if(selectedRole === 'tutor' && currentUser.role === 'admin' && currentUser._tutoriaGrupoVista) return currentUser._tutoriaGrupoVista;
+  // Si entró como tutor y eligió un grupo en la pantalla de selección
+  // (admin real, o tutor sin grupo asignado en la BD), usar ese grupo
+  if(selectedRole === 'tutor' && currentUser._tutoriaGrupoVista) return currentUser._tutoriaGrupoVista;
   return currentUser.tutoriaGrupo || null;
 };
 
@@ -1386,7 +1431,22 @@ function startListeners(){
     snap.forEach(c => { const s = c.val(); arr.push({id:c.key, ...s, grupo: normalizeGrupo(s.grupo)}); });
     arr.sort((a,b) => (a.nombre||'').localeCompare(b.nombre||'','es'));
     cachedStudents = arr;
-    if(['nuevoParte','alumnado','dashboard'].includes(currentView)) renderCurrentView();
+    // Re-completar partes que llegaron antes que el alumnado (introducidos a
+    // mano en la BD sin nombre/grupo del alumno)
+    let enriquecidos = 0;
+    cachedPartes.forEach(p => {
+      if(p.alumnoId && !p.alumnoNombre){
+        const al = arr.find(s => s.id === p.alumnoId);
+        if(al){
+          p.alumnoNombre = al.nombre;
+          if(!p.grupo) p.grupo = normalizeGrupo(al.grupo);
+          if(!p.curso) p.curso = al.curso;
+          enriquecidos++;
+        }
+      }
+    });
+    if(enriquecidos > 0) lastPartesSig = null; // fuerza un repintado coherente
+    if(['nuevoParte','alumnado','dashboard','informes'].includes(currentView)) renderCurrentView();
   });
   unsubscribers.push(unsub1);
 
@@ -1439,7 +1499,7 @@ function startListeners(){
       // Si no hay curso activo definido en Firebase, usar el calculado por fecha
       cachedCursoActivo = getCurrentCursoByDate();
     }
-    if(['cursos','dashboard','alumnado','nuevoParte'].includes(currentView)) renderCurrentView();
+    if(['cursos','dashboard','alumnado','nuevoParte','informes'].includes(currentView)) renderCurrentView();
     updateCursoIndicator();
   });
   unsubscribers.push(unsubCursoActivo);
@@ -1451,7 +1511,18 @@ function startListeners(){
     // Normalizar grupos de tutoría
     Object.keys(users).forEach(uid => { if(users[uid].tutoriaGrupo) users[uid].tutoriaGrupo = normalizeGrupo(users[uid].tutoriaGrupo); });
     cachedUsers = users;
-    if(['usuarios','dashboard'].includes(currentView)) renderCurrentView();
+    // Completar el nombre del profesor en partes cargados antes que los usuarios
+    let profCompletados = 0;
+    cachedPartes.forEach(p => {
+      if(p.profesorId && !p.profesorNombre && users[p.profesorId]){
+        p.profesorNombre = users[p.profesorId].nombre;
+        profCompletados++;
+      }
+    });
+    if(profCompletados > 0){
+      lastPartesSig = null;
+      if(currentView === 'informes' || currentView === 'todosPartes') renderCurrentView();
+    } else if(['usuarios','dashboard'].includes(currentView)) renderCurrentView();
   });
   unsubscribers.push(unsubUsers);
 
@@ -1510,11 +1581,46 @@ function listenPartes(){
       if(p.tipo === 'CCN') p.tipo = 'CCNC';
       if(p.conductaId && p.conductaId.startsWith('CCN') && !p.conductaId.startsWith('CCNC')) p.conductaId = 'CCNC' + p.conductaId.slice(3);
       if(p.conductaTexto && p.conductaTexto.startsWith('CCN') && !p.conductaTexto.startsWith('CCNC')) p.conductaTexto = 'CCNC' + p.conductaTexto.slice(3);
+      // Normalizar partes antiguos sin tipo ni estado: el tipo se infiere
+      // del código de conducta y el estado por defecto es "abierto".
+      // Sin esto, p.tipo.toLowerCase() rompe las vistas y los informes.
+      if(!p.tipo) p.tipo = (p.conductaId && String(p.conductaId).indexOf('CGPC') === 0) ? 'CGPC' : 'CCNC';
+      if(!p.estado) p.estado = 'abierto';
+      // Normalizar la fecha del incidente a milisegundos: los partes
+      // introducidos directamente en la base de datos pueden traer la fecha
+      // como cadena ("18/09/2026", "2026-09-18"...) o como Timestamp de
+      // Firebase, y eso rompía la ordenación, el filtrado por curso y la
+      // propia visualización de la fecha.
+      const ts = parseFechaIncidente(p.fechaIncidente);
+      if(ts !== null){ p.__fechaTs = ts; p.fechaIncidente = ts; }
+      // Completar campos de visualización si el parte se introdujo a mano en
+      // la BD sin ellos (sin esto, los desplegables de informes quedan vacíos
+      // o muestran opciones vacías que no se pueden seleccionar).
+      if(p.alumnoId && !p.alumnoNombre){
+        const al = cachedStudents.find(s => s.id === p.alumnoId);
+        if(al){
+          p.alumnoNombre = al.nombre;
+          if(!p.grupo) p.grupo = al.grupo;
+          if(!p.curso) p.curso = al.curso;
+        }
+      }
+      if(p.profesorId && !p.profesorNombre){
+        const pr = cachedUsers[p.profesorId];
+        if(pr) p.profesorNombre = pr.nombre;
+      }
       arr.push({id:c.key, ...p, grupo: normalizeGrupo(p.grupo)});
     });
     arr.sort((a,b) => (b.createdAt||0) - (a.createdAt||0));
+    // Evitar re-renders innecesarios: antes, CUALQUIER escritura en /partes
+    // (otro profesor guardando, un tutor marcando "visto"...) repintaba la
+    // vista de informes y reseteaba los desplegables que el usuario estaba
+    // desplegando. Ahora solo se repinta si algo relevante cambió de verdad.
+    const sig = arr.map(p => `${p.id}|${p.cursoEscolar||''}|${p.estado||''}|${p.fechaIncidente||0}|${p.alumnoNombre||''}|${p.grupo||''}|${p.profesorNombre||''}|${p.vistoPorTutor?1:0}|${p.updatedAt||0}`).join('~');
     cachedPartes = arr;
-    if(['dashboard','misPartes','partesTutoria','todosPartes','alumnoDetail'].includes(currentView)) renderCurrentView();
+    if(sig !== lastPartesSig){
+      lastPartesSig = sig;
+      if(['dashboard','misPartes','partesTutoria','todosPartes','alumnoDetail','informes'].includes(currentView)) renderCurrentView();
+    }
   });
   unsubscribers.push(unsub);
 }
@@ -1931,6 +2037,17 @@ window.restoreNpDraft = () => {
 
 function renderCurrentView(){
   const c = $('mainContent');
+  // Preservar las selecciones de los desplegables al repintar la misma
+  // vista (p.ej. cuando llega un dato nuevo de Firebase mientras el usuario
+  // está desplegando una lista): sin esto, los selects se resetean solos
+  // y da la impresión de que "no se puede seleccionar nada".
+  let snap = null;
+  if(currentView === 'informes'){
+    snap = {};
+    c.querySelectorAll('select[id]').forEach(el => {
+      if(el.value && el.id !== 'infCurso' && el.id !== 'infPeriodo') snap[el.id] = el.value;
+    });
+  }
   c.innerHTML = '';
   switch(currentView){
     case 'dashboard': renderDashboard(c); break;
@@ -1946,6 +2063,17 @@ function renderCurrentView(){
     case 'notifications': renderNotifications(c); break;
     case 'profile': renderProfile(c); break;
     default: renderDashboard(c);
+  }
+  // Restaurar las selecciones capturadas antes del repintado y regenerar
+  // sus resultados (el evento change reconstruye el panel de detalle).
+  if(snap){
+    Object.keys(snap).forEach(id => {
+      const el = $(id);
+      if(el && el.tagName === 'SELECT' && [...el.options].some(o => o.value === snap[id])){
+        el.value = snap[id];
+        el.dispatchEvent(new Event('change'));
+      }
+    });
   }
 }
 /* Expose render functions for testing/debugging */
@@ -1984,9 +2112,44 @@ function renderDashboard(c){
     tutoriaPartes = cachedPartes.filter(p => p.grupo === effTutoriaGrupo && esParteDelCurso(p, cursoActivoActual()));
   }
 
+  // Aviso de datos "invisibles": partes archivados en un curso escolar
+  // distinto del activo (típico al empezar un curso nuevo sin actualizar la
+  // configuración, o al introducir partes a mano en la base de datos).
+  const baseRol = cachedPartes.filter(p => {
+    if(effRole === 'profesor') return p.profesorId === currentUserUid;
+    if(isTutor && effTutoriaGrupo) return normalizeGrupo(p.grupo) === normalizeGrupo(effTutoriaGrupo);
+    if(isAdmin) return true;
+    return false;
+  });
+  const cursosDisponibles = {};
+  baseRol.forEach(p => { const cc = parteCursoEscolar(p); cursosDisponibles[cc] = (cursosDisponibles[cc]||0)+1; });
+  const cursoAhora = cursoActivoActual();
+  let avisoCurso = '';
+  if(baseRol.length > 0 && !cursosDisponibles[cursoAhora]){
+    const otros = Object.keys(cursosDisponibles).sort((a,b) => b.localeCompare(a));
+    avisoCurso = `
+    <div class="card" style="border-left:4px solid #e8a93c;background:linear-gradient(135deg,#fdf3d8,#fef9e7);margin-bottom:16px">
+      <div style="font-weight:600">⚠️ No hay ningún parte en el curso activo (${escapeHtml(cursoAhora)})</div>
+      <div style="font-size:13px;color:var(--c-text-soft);margin-top:4px">Hay ${baseRol.length} parte(s) archivados en: ${otros.map(cc => `<strong>${escapeHtml(cc)}</strong> (${cursosDisponibles[cc]})`).join(' · ')}. Si acaba de empezar un curso escolar nuevo, créalo y actívalo en la gestión de cursos, o consulta los informes del curso donde están los datos.</div>
+      <div class="flex gap-8 flex-wrap" style="margin-top:10px">
+        <button class="btn btn-secondary btn-sm" onclick="__verInformesCurso('${otros[0]}')">📄 Ver informes de ${escapeHtml(otros[0])}</button>
+        ${isRealAdmin() ? `<button class="btn btn-primary btn-sm" onclick="navigate('cursos')">⚙️ Gestionar cursos</button>` : ''}
+      </div>
+    </div>`;
+  } else if(isRealAdmin() && cachedCursoActivo && getCurrentCursoByDate() !== cachedCursoActivo){
+    avisoCurso = `
+    <div class="card" style="border-left:4px solid #e8a93c;background:linear-gradient(135deg,#fdf3d8,#fef9e7);margin-bottom:16px">
+      <div style="font-weight:600">⚠️ El curso activo configurado (${escapeHtml(cursoAhora)}) no coincide con el de la fecha actual (${escapeHtml(getCurrentCursoByDate())})</div>
+      <div style="font-size:13px;color:var(--c-text-soft);margin-top:4px">Los partes nuevos se están guardando en <strong>${escapeHtml(cursoAhora)}</strong>. Si el curso ${escapeHtml(getCurrentCursoByDate())} ya ha empezado, créalo y actívalo en la gestión de cursos para que todo quede bien archivado.</div>
+      <div style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="navigate('cursos')">⚙️ Gestionar cursos</button></div>
+    </div>`;
+  }
+
   c.innerHTML = `
     <div class="page-title">Hola, ${escapeHtml((currentUser.nombre||'').split(' ')[0])}</div>
     <div class="page-subtitle">${escapeHtml(new Date().toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long',year:'numeric'}))}</div>
+
+    ${avisoCurso}
 
     <div class="stats-grid">
       <div class="stat-card">
@@ -2059,7 +2222,7 @@ function renderParteCard(p){
           <div class="parte-grupo">${escapeHtml(p.grupo||'')} · ${escapeHtml(p.curso||'')}</div>
         </div>
         <div class="flex flex-col gap-8" style="align-items:flex-end">
-          <span class="parte-tag tag-${p.tipo.toLowerCase()}">${escapeHtml(p.tipo)}</span>
+          <span class="parte-tag tag-${(p.tipo||'').toLowerCase()}">${escapeHtml(p.tipo||'—')}</span>
           ${p.estado === 'cerrado' ? '<span class="parte-tag tag-cerrado">Cerrado</span>' : '<span class="parte-tag tag-abierto">Abierto</span>'}
         </div>
       </div>
@@ -2839,7 +3002,7 @@ window.openParteDetail = (parteId) => {
     </div>
     <div class="detail-section">
       <h4>Conducta</h4>
-      <div class="detail-row"><span class="label">Tipo</span><span class="value"><span class="parte-tag tag-${p.tipo.toLowerCase()}">${escapeHtml(p.tipo)}</span></span></div>
+      <div class="detail-row"><span class="label">Tipo</span><span class="value"><span class="parte-tag tag-${(p.tipo||'').toLowerCase()}">${escapeHtml(p.tipo||'—')}</span></span></div>
       <div class="detail-row"><span class="label">Código</span><span class="value fw-700">${escapeHtml(p.conductaId)}</span></div>
       <div class="detail-row" style="flex-direction:column;align-items:flex-start"><span class="label" style="margin-bottom:6px">Descripción tipificada</span><span class="value" style="text-align:left">${escapeHtml(cond?cond.texto:'')}</span></div>
     </div>
@@ -2925,8 +3088,8 @@ window.openParteDetail = (parteId) => {
 window.generarPDFParteDesdeDetalle = (parteId) => {
   const p = cachedPartes.find(x => x.id === parteId);
   if(!p){ toast('Parte no encontrado','error'); return; }
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  $('printContainer').innerHTML = printParteCompleto(p, cursoActivo);
+  // El documento muestra el curso al que PERTENECE el parte (no el activo)
+  $('printContainer').innerHTML = printParteCompleto(p, p.cursoEscolar || parteCursoEscolar(p));
   const nombreAlumno = sanitizeFilename(p.alumnoNombre || 'alumno');
   const fechaIncidente = fmtFecha(p.fechaIncidente).replace(/\//g, '-');
   const filename = `Notificacion_${nombreAlumno}_${fechaIncidente}`;
@@ -4605,6 +4768,281 @@ window.updateCursoIndicator = () => {
  * Admin: todas las estadísticas y recuentos posibles del centro
  * Todos pueden exportar a PDF (mediante window.print, que en móvil y PC permite "Guardar como PDF")
  */
+/* ===== Filtros de la vista de informes =====
+ * La vista de informes dispone de dos filtros comunes a los tres roles:
+ * - Curso escolar: permite consultar los partes de cualquier curso (por
+ *   defecto, el curso activo). Imprescindible cuando los partes quedan
+ *   archivados en un curso distinto del activo.
+ * - Período: todo el curso, o un tramo fijo (hoy, semana, quincena, mes,
+ *   trimestre) o personalizado por el usuario (desde/hasta).
+ * El estado vive en informesFiltro y se aplica a TODOS los informes y PDF. */
+let informesFiltro = { curso: null, periodo: 'curso', desde: null, hasta: null };
+
+const INFORMES_PERIODOS = {
+  curso: 'Todo el curso',
+  hoy: 'Hoy',
+  '7d': 'Últimos 7 días',
+  semana: 'Esta semana (lunes-domingo)',
+  '15d': 'Últimos 15 días (quincena)',
+  mes: 'Este mes',
+  mesAnt: 'Mes anterior',
+  trimestre: 'Este trimestre',
+  trimestreAnt: 'Trimestre anterior',
+  custom: 'Personalizado (elegir fechas)…'
+};
+
+/* Curso sobre el que se está informando ahora mismo */
+const informesCursoSel = () => informesFiltro.curso || cursoActivoActual();
+
+/* Trimestres escolares (aprox. Andalucía): T1 = 1 sep - 30 nov,
+ * T2 = 1 dic - 28/29 feb, T3 = 1 mar - 30 jun. offset 0 = actual, -1 = anterior. */
+function rangoTrimestre(offset){
+  const d = new Date();
+  const m = d.getMonth() + 1;
+  let t = (m >= 9) ? 0 : (m === 12 || m <= 2) ? 1 : 2;
+  let ys = (m >= 9) ? d.getFullYear() : d.getFullYear() - 1;
+  t += offset;
+  while(t < 0){ t += 3; ys -= 1; }
+  while(t > 2){ t -= 3; ys += 1; }
+  if(t === 0) return { desde: new Date(ys, 8, 1).getTime(), hasta: new Date(ys, 10, 30, 23, 59, 59, 999).getTime() };
+  if(t === 1) return { desde: new Date(ys, 11, 1).getTime(), hasta: new Date(ys + 1, 2, 0, 23, 59, 59, 999).getTime() };
+  return { desde: new Date(ys + 1, 2, 1).getTime(), hasta: new Date(ys + 1, 5, 30, 23, 59, 59, 999).getTime() };
+}
+
+/* Rango [desde, hasta] en ms del período seleccionado (null = todo el curso) */
+function informesRango(){
+  const dia = (ms) => { const d = new Date(ms); d.setHours(0,0,0,0); return d.getTime(); };
+  const finDia = (ms) => { const d = new Date(ms); d.setHours(23,59,59,999); return d.getTime(); };
+  const ahora = Date.now();
+  switch(informesFiltro.periodo){
+    case 'hoy': return { desde: dia(ahora), hasta: finDia(ahora) };
+    case '7d': return { desde: dia(ahora - 6 * 86400000), hasta: finDia(ahora) };
+    case '15d': return { desde: dia(ahora - 14 * 86400000), hasta: finDia(ahora) };
+    case 'semana': {
+      const d = new Date();
+      const lunes = d.getTime() - ((d.getDay() + 6) % 7) * 86400000;
+      return { desde: dia(lunes), hasta: finDia(lunes + 6 * 86400000) };
+    }
+    case 'mes': {
+      const d = new Date();
+      return { desde: new Date(d.getFullYear(), d.getMonth(), 1).getTime(), hasta: new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999).getTime() };
+    }
+    case 'mesAnt': {
+      const d = new Date();
+      return { desde: new Date(d.getFullYear(), d.getMonth() - 1, 1).getTime(), hasta: new Date(d.getFullYear(), d.getMonth(), 0, 23, 59, 59, 999).getTime() };
+    }
+    case 'trimestre': return rangoTrimestre(0);
+    case 'trimestreAnt': return rangoTrimestre(-1);
+    case 'custom': {
+      if(!informesFiltro.desde || !informesFiltro.hasta) return null;
+      return { desde: new Date(informesFiltro.desde + 'T00:00:00').getTime(), hasta: new Date(informesFiltro.hasta + 'T23:59:59.999').getTime() };
+    }
+    default: return null;
+  }
+}
+
+/* Etiqueta descriptiva del período, para pantalla y PDF */
+const informesPeriodoLabel = () => {
+  const r = informesRango();
+  if(!r) return 'Todo el curso';
+  if(informesFiltro.periodo === 'custom') return `Del ${fmtFecha(r.desde)} al ${fmtFecha(r.hasta)}`;
+  return `${INFORMES_PERIODOS[informesFiltro.periodo]} (${fmtFecha(r.desde)} – ${fmtFecha(r.hasta)})`;
+};
+
+/* Aplica los filtros de la vista (curso + período) a una lista de partes ya
+ * acotada al ámbito del rol (profesor/tutor/admin). */
+function filtrarPartesInforme(list){
+  const curso = informesCursoSel();
+  let out = list.filter(p => esParteDelCurso(p, curso));
+  const r = informesRango();
+  if(r){
+    out = out.filter(p => { const t = fechaIncidenteTs(p); return t !== null && t >= r.desde && t <= r.hasta; });
+  }
+  return out;
+}
+
+/* Distribución de una lista de partes por curso escolar: [[curso, n], …] */
+function cursosConPartes(list){
+  const counts = {};
+  list.forEach(p => { const cc = parteCursoEscolar(p); counts[cc] = (counts[cc] || 0) + 1; });
+  return Object.entries(counts).sort((a,b) => b[0].localeCompare(a[0]));
+}
+
+/* Panel de filtros común a los informes de los tres roles */
+function informesFiltrosHTML(scopeList){
+  const activo = cursoActivoActual();
+  const sel = informesCursoSel();
+  const conPartes = cursosConPartes(scopeList);
+  const labels = new Set([activo]);
+  conPartes.forEach(([cc]) => labels.add(cc));
+  if(informesFiltro.curso) labels.add(informesFiltro.curso); // aunque ya no tenga partes
+  const opts = [...labels].sort((a,b) => b.localeCompare(a)).map(cc => {
+    const n = (conPartes.find(([cx]) => cx === cc) || [0,0])[1];
+    return `<option value="${escapeHtml(cc)}"${cc === sel ? ' selected' : ''}>${escapeHtml(cc)} — ${n} parte${n === 1 ? '' : 's'}${cc === activo ? ' · curso activo' : ''}</option>`;
+  }).join('');
+  const perOpts = Object.entries(INFORMES_PERIODOS).map(([k,v]) => `<option value="${k}"${k === informesFiltro.periodo ? ' selected' : ''}>${v}</option>`).join('');
+  const r = informesRango();
+  // Pista cuando el curso seleccionado no tiene partes pero otros sí
+  const otros = conPartes.filter(([cc]) => cc !== sel);
+  const pista = (conPartes.length > 0 && otros.length > 0 && !conPartes.find(([cc]) => cc === sel))
+    ? `<div style="margin-top:10px;padding:8px 12px;background:#fdf3d8;border:1px solid #e8c56c;border-radius:8px;font-size:13px">⚠️ No hay partes del curso <strong>${escapeHtml(sel)}</strong>${r ? ' en este período' : ''}. Puedes consultar: ${otros.map(([cc,n]) => `<a href="#" onclick="__verInformesCurso('${escapeHtml(cc)}');return false" style="text-decoration:underline">${escapeHtml(cc)} (${n})</a>`).join(' · ')}</div>`
+    : '';
+  return `
+    <div class="card">
+      <div class="card-title"><span>🗓️ Filtros del informe</span></div>
+      <div class="flex gap-8 flex-wrap" style="align-items:flex-end">
+        <div class="form-group" style="margin-bottom:0;min-width:230px">
+          <label style="font-size:12px;color:var(--c-text-muted)">Curso escolar</label>
+          <select id="infCurso" class="form-control">${opts}</select>
+        </div>
+        <div class="form-group" style="margin-bottom:0;min-width:230px">
+          <label style="font-size:12px;color:var(--c-text-muted)">Período</label>
+          <select id="infPeriodo" class="form-control">${perOpts}</select>
+        </div>
+        <div id="infRangoCustom" class="flex gap-8" style="${informesFiltro.periodo === 'custom' ? '' : 'display:none;'}align-items:flex-end">
+          <div class="form-group" style="margin-bottom:0">
+            <label style="font-size:12px;color:var(--c-text-muted)">Desde</label>
+            <input type="date" id="infDesde" class="form-control" value="${escapeHtml(informesFiltro.desde || '')}">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label style="font-size:12px;color:var(--c-text-muted)">Hasta</label>
+            <input type="date" id="infHasta" class="form-control" value="${escapeHtml(informesFiltro.hasta || '')}">
+          </div>
+          <button class="btn btn-secondary" onclick="aplicarRangoCustom()">Aplicar</button>
+        </div>
+        <button class="btn btn-ghost" onclick="resetInformesFiltro()">↺ Quitar filtros</button>
+      </div>
+      ${r ? `<div style="font-size:12px;color:var(--c-text-muted);margin-top:8px">Período del informe: <strong>${escapeHtml(informesPeriodoLabel())}</strong> · Curso: <strong>${escapeHtml(sel)}</strong></div>` : ''}
+      ${pista}
+    </div>`;
+}
+
+window.__verInformesCurso = (curso) => { informesFiltro.curso = curso; navigate('informes'); };
+window.infCursoChange = () => {
+  informesFiltro.curso = $('infCurso').value || null;
+  renderCurrentView();
+};
+window.infPeriodoChange = () => {
+  informesFiltro.periodo = $('infPeriodo').value;
+  if(informesFiltro.periodo !== 'custom'){
+    informesFiltro.desde = null; informesFiltro.hasta = null;
+    renderCurrentView();
+  } else {
+    const rc = $('infRangoCustom'); if(rc) rc.style.display = 'flex';
+    const d = $('infDesde'); if(d) d.focus();
+  }
+};
+window.aplicarRangoCustom = () => {
+  const d = $('infDesde') ? $('infDesde').value : '';
+  const h = $('infHasta') ? $('infHasta').value : '';
+  if(!d || !h){ toast('Indica las dos fechas (desde y hasta)','error'); return; }
+  if(d > h){ toast('La fecha "Desde" no puede ser posterior a "Hasta"','error'); return; }
+  informesFiltro.desde = d; informesFiltro.hasta = h;
+  renderCurrentView();
+};
+window.resetInformesFiltro = () => {
+  informesFiltro = { curso: null, periodo: 'curso', desde: null, hasta: null };
+  renderCurrentView();
+};
+function setupInformesFiltros(){
+  const c1 = $('infCurso'); if(c1) c1.onchange = infCursoChange;
+  const c2 = $('infPeriodo'); if(c2) c2.onchange = infPeriodoChange;
+}
+
+/* === Diagnóstico y reparación (solo admin) ===
+ * Muestra cómo están repartidos los partes de la BD por curso escolar y
+ * permite reparar los que quedaron archivados en un curso que no
+ * corresponde a su fecha (típico al cambiar de curso escolar o al
+ * introducir partes a mano directamente en la base de datos). */
+function diagnosticoPartesHTML(){
+  const dist = cursosConPartes(cachedPartes);
+  const sinFecha = cachedPartes.filter(p => fechaIncidenteTs(p) === null);
+  const sinCurso = cachedPartes.filter(p => !p.cursoEscolar && fechaIncidenteTs(p) !== null);
+  const inconsistentes = cachedPartes.filter(p => {
+    const ts = fechaIncidenteTs(p);
+    if(ts === null) return false;
+    const d = new Date(ts); const y = d.getFullYear();
+    const inferido = d.getMonth() + 1 >= 9 ? `${y}-${y+1}` : `${y-1}-${y}`;
+    return p.cursoEscolar !== inferido;
+  });
+  const activo = cursoActivoActual();
+  return `
+    <div class="card" style="border-color:#e8c56c">
+      <div class="card-title"><span>🩺 Diagnóstico de datos</span></div>
+      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">Reparto de <strong>todos</strong> los partes de la base de datos por curso escolar, sin filtros. Si no ves unos partes en la aplicación, casi siempre es porque están archivados en un curso distinto del curso activo (${escapeHtml(activo)}).</p>
+      <table style="width:100%;font-size:13px;border-collapse:collapse">
+        <thead><tr style="text-align:left;border-bottom:2px solid var(--c-border)"><th style="padding:6px 8px">Curso</th><th style="padding:6px 8px">Partes</th><th style="padding:6px 8px"></th></tr></thead>
+        <tbody>
+          ${dist.map(([cc, n]) => `<tr style="border-bottom:1px solid var(--c-border)"><td style="padding:6px 8px"><strong>${escapeHtml(cc)}</strong>${cc === activo ? ' <span style="font-size:11px;color:var(--c-primary)">(activo)</span>' : ''}</td><td style="padding:6px 8px">${n}</td><td style="padding:6px 8px"><button class="btn btn-secondary btn-sm" onclick="__verInformesCurso('${escapeHtml(cc)}')">Ver informes</button></td></tr>`).join('')}
+        </tbody>
+      </table>
+      ${inconsistentes.length > 0 ? `
+      <div style="margin-top:12px;padding:10px 12px;background:#fdf3d8;border:1px solid #e8c56c;border-radius:8px;font-size:13px">
+        ⚠️ <strong>${inconsistentes.length}</strong> parte(s) tienen asignado un curso que no corresponde a la fecha del incidente (se guardaron antes de un cambio de curso activo, o se introdujeron a mano en la BD). Esto los hace invisibles en el curso al que pertenecen realmente.
+        <div style="margin-top:8px"><button class="btn btn-accent btn-sm" onclick="repararCursosPartes()">🛠️ Reasignar cada parte al curso de su fecha</button></div>
+      </div>` : ''}
+      ${sinFecha.length > 0 || sinCurso.length > 0 ? `
+      <div style="margin-top:8px;font-size:12px;color:var(--c-text-muted)">
+        ${sinFecha.length > 0 ? `· ${sinFecha.length} parte(s) sin fecha del incidente válida (no se pueden filtrar por fecha ni por período).` : ''}
+        ${sinCurso.length > 0 ? `· ${sinCurso.length} parte(s) sin curso asignado (se les infiere el curso a partir de la fecha).` : ''}
+        ${sinFecha.filter(p => !p.cursoEscolar).length > 0 ? `<div style="margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="asignarOrfanosCurso()">Asignar al curso activo los partes sin fecha ni curso</button></div>` : ''}
+      </div>` : ''}
+    </div>`;
+}
+
+window.repararCursosPartes = () => {
+  const fixes = [];
+  cachedPartes.forEach(p => {
+    const ts = fechaIncidenteTs(p);
+    if(ts === null) return;
+    const d = new Date(ts); const y = d.getFullYear();
+    const inferido = d.getMonth() + 1 >= 9 ? `${y}-${y+1}` : `${y-1}-${y}`;
+    if(p.cursoEscolar !== inferido) fixes.push([p.id, inferido]);
+  });
+  if(fixes.length === 0){ toast('No hay partes que reparar','success'); return; }
+  window.__fixesCursos = fixes;
+  openModal('Reparar curso de los partes',
+    `<p>Se va a actualizar el campo <strong>cursoEscolar</strong> de <strong>${fixes.length}</strong> parte(s) para que coincida con el curso escolar de su fecha de incidente.</p>
+     <p style="font-size:12px;color:var(--c-text-muted);max-height:180px;overflow:auto">${fixes.map(([id, cc]) => `${escapeHtml(id)} → <strong>${escapeHtml(cc)}</strong>`).join('<br>')}</p>`,
+    `<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button> <button class="btn btn-primary" onclick="confirmarRepararCursos()">Sí, reparar</button>`);
+};
+window.confirmarRepararCursos = async () => {
+  const fixes = window.__fixesCursos || [];
+  window.__fixesCursos = [];
+  if(fixes.length === 0){ closeModal(); return; }
+  try{
+    const updates = {};
+    fixes.forEach(([id, cc]) => { updates[`${id}/cursoEscolar`] = cc; });
+    await update(ref(db, `${DB_ROOT}/partes`), updates);
+    closeModal();
+    toast(`${fixes.length} parte(s) reasignados correctamente`,'success');
+  }catch(e){
+    toast('Error al reparar: ' + e.message,'error');
+  }
+};
+window.asignarOrfanosCurso = () => {
+  const fixes = cachedPartes.filter(p => fechaIncidenteTs(p) === null && !p.cursoEscolar).map(p => p.id);
+  if(fixes.length === 0){ toast('No hay partes sin fecha ni curso','success'); return; }
+  const activo = cursoActivoActual();
+  openModal('Asignar partes huérfanos',
+    `<p>Hay <strong>${fixes.length}</strong> parte(s) sin fecha del incidente y sin curso asignado. Se van a archivar en el curso activo (<strong>${escapeHtml(activo)}</strong>) para que sean visibles en la aplicación.</p>`,
+    `<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button> <button class="btn btn-primary" onclick="confirmarAsignarOrfanos()">Sí, asignar</button>`);
+};
+window.confirmarAsignarOrfanos = async () => {
+  const fixes = cachedPartes.filter(p => fechaIncidenteTs(p) === null && !p.cursoEscolar).map(p => p.id);
+  closeModal();
+  if(fixes.length === 0) return;
+  try{
+    const updates = {};
+    const activo = cursoActivoActual();
+    fixes.forEach(id => { updates[`${id}/cursoEscolar`] = activo; });
+    await update(ref(db, `${DB_ROOT}/partes`), updates);
+    toast(`${fixes.length} parte(s) asignados al curso ${activo}`,'success');
+  }catch(e){
+    toast('Error al asignar: ' + e.message,'error');
+  }
+};
+
 function renderInformes(c){
   const effRole = getEffectiveRole();
   const realRole = currentUser.role;
@@ -4640,7 +5078,7 @@ function printParteItem(p){
   return `<div class="parte-item">
     <div class="pi-header">
       <span>${escapeHtml(p.conductaId)} — ${escapeHtml(p.alumnoNombre)} (${escapeHtml(p.grupo||'')})</span>
-      <span>${escapeHtml(p.tipo)} · ${p.estado === 'cerrado' ? 'Cerrado' : 'Abierto'}</span>
+      <span>${escapeHtml(p.tipo||'—')} · ${p.estado === 'cerrado' ? 'Cerrado' : 'Abierto'}</span>
     </div>
     <div class="pi-body">${escapeHtml(cond ? cond.texto : '')}</div>
     ${p.ubicacion ? `<div class="pi-body"><strong>Ubicación:</strong> ${escapeHtml(p.ubicacion)}</div>` : ''}
@@ -4655,18 +5093,24 @@ function printParteItem(p){
   </div>`;
 }
 
+/* Título base de la aplicación (se captura una vez al arrancar) */
+const APP_TITLE = document.title;
+
 /* Lanza la impresión / guardado como PDF.
  * Si se pasa un filename, se usa como título temporal del documento para
- * que el navegador lo proponga como nombre de archivo al guardar como PDF. */
+ * que el navegador lo proponga como nombre de archivo al guardar como PDF.
+ * El título se restaura SIEMPRE al título base de la app: capturar el
+ * título "original" en el momento de la llamada provocaba que, con varias
+ * impresiones seguidas, el título quedara "pillado" en el nombre de
+ * archivo de una exportación anterior. */
 window.imprimirInforme = (filename) => {
-  const originalTitle = document.title;
   if(filename){
     document.title = filename;
   }
-  // Restaurar el título original después de imprimir
-  const restore = () => { document.title = originalTitle; window.removeEventListener('afterprint', restore); };
+  // Restaurar el título base después de imprimir
+  const restore = () => { document.title = APP_TITLE; window.removeEventListener('afterprint', restore); };
   window.addEventListener('afterprint', restore);
-  // Fallback por si afterprint no se disca (algunos navegadores móviles)
+  // Fallback por si afterprint no se dispara (algunos navegadores móviles)
   setTimeout(restore, 3000);
   window.print();
 };
@@ -4680,17 +5124,19 @@ const sanitizeFilename = (text) => {
 /* === INFORMES DEL PROFESOR === */
 function renderInformesProfesor(c, cursoActivo){
   const myPartes = cachedPartes.filter(p => p.profesorId === currentUserUid);
-  // Aislamiento estricto por curso: los partes antiguos sin campo se infieren por fecha del incidente
-  const partesCurso = myPartes.filter(p => esParteDelCurso(p, cursoActivo));
+  // Se aplican los filtros de la vista (curso seleccionado + período)
+  const partesCurso = filtrarPartesInforme(myPartes);
+  const partesOrdenados = [...partesCurso].sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
 
-  // Alumnos únicos a los que ha puesto partes
-  const alumnosUnicos = [...new Set(partesCurso.map(p => p.alumnoNombre))].sort();
-  // Grupos únicos
+  // Alumnos y grupos únicos con partes en el ámbito filtrado
+  const alumnosUnicos = [...new Set(partesCurso.map(p => p.alumnoNombre).filter(Boolean))].sort();
   const gruposUnicos = [...new Set(partesCurso.map(p => p.grupo).filter(Boolean))].sort();
 
   c.innerHTML = `
     <div class="page-title">Informes</div>
-    <div class="page-subtitle">Estadísticas de tus partes · Curso ${escapeHtml(cursoActivo)}</div>
+    <div class="page-subtitle">Estadísticas de tus partes · Curso ${escapeHtml(informesCursoSel())}</div>
+
+    ${informesFiltrosHTML(myPartes)}
 
     <div class="card">
       <div class="card-title"><span>📊 Resumen general</span></div>
@@ -4705,9 +5151,9 @@ function renderInformesProfesor(c, cursoActivo){
 
     <div class="card">
       <div class="card-title"><span>👥 Por alumno</span></div>
-      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">Selecciona un alumno para ver el detalle de sus partes y exportarlo a PDF.</p>
+      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${partesCurso.length === 0 ? 'No hay partes que coincidan con los filtros seleccionados: prueba a cambiar el curso o el período de arriba.' : 'Selecciona un alumno para ver el detalle de sus partes y exportarlo a PDF.'}</p>
       <select id="infProfAlumno" class="form-control" style="max-width:400px;margin-bottom:10px">
-        <option value="">— Selecciona alumno —</option>
+        <option value="">${alumnosUnicos.length ? '— Selecciona alumno —' : '— Sin resultados —'}</option>
         ${alumnosUnicos.map(a => {
           const count = partesCurso.filter(p => p.alumnoNombre === a).length;
           return `<option value="${escapeHtml(a)}">${escapeHtml(a)} (${count} partes)</option>`;
@@ -4718,9 +5164,9 @@ function renderInformesProfesor(c, cursoActivo){
 
     <div class="card">
       <div class="card-title"><span>🏫 Por grupo</span></div>
-      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">Selecciona un grupo para ver el detalle y exportarlo a PDF.</p>
+      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${partesCurso.length === 0 ? 'No hay partes que coincidan con los filtros seleccionados.' : 'Selecciona un grupo para ver el detalle y exportarlo a PDF.'}</p>
       <select id="infProfGrupo" class="form-control" style="max-width:400px;margin-bottom:10px">
-        <option value="">— Selecciona grupo —</option>
+        <option value="">${gruposUnicos.length ? '— Selecciona grupo —' : '— Sin resultados —'}</option>
         ${gruposUnicos.map(g => {
           const count = partesCurso.filter(p => p.grupo === g).length;
           return `<option value="${escapeHtml(g)}">${escapeHtml(g)} (${count} partes)</option>`;
@@ -4731,11 +5177,11 @@ function renderInformesProfesor(c, cursoActivo){
 
     <div class="card" style="background:linear-gradient(135deg,#fdf3d8,#fef9e7);border-color:var(--c-accent)">
       <div class="card-title"><span>📋 Parte completo para iPasen</span></div>
-      <p style="font-size:13px;color:var(--c-text-soft);margin-bottom:10px;line-height:1.5">Genera un documento PDF con <strong>todos los datos</strong> del parte de incidencias, listo para enviar por la mensajería de iPasen. Selecciona un parte concreto o exporta todos a la vez (un parte por página).</p>
+      <p style="font-size:13px;color:var(--c-text-soft);margin-bottom:10px;line-height:1.5">Genera un documento PDF con <strong>todos los datos</strong> del parte de incidencias, listo para enviar por la mensajería de iPasen. Selecciona un parte concreto o exporta todos a la vez en un único documento (un parte por página).</p>
       <div class="form-group" style="margin-bottom:10px">
         <select id="infProfParteCompleto" class="form-control" style="max-width:500px">
-          <option value="">— Selecciona un parte concreto —</option>
-          ${partesCurso.sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0)).map(p => {
+          <option value="">${partesOrdenados.length ? '— Selecciona un parte concreto —' : '— Sin partes que coincidan con los filtros —'}</option>
+          ${partesOrdenados.map(p => {
             const label = `${fmtFecha(p.fechaIncidente)} · ${p.conductaId} · ${p.alumnoNombre} (${p.grupo||''})`;
             return `<option value="${p.id}">${escapeHtml(label)}</option>`;
           }).join('')}
@@ -4743,17 +5189,18 @@ function renderInformesProfesor(c, cursoActivo){
       </div>
       <div class="flex gap-8 flex-wrap">
         <button class="btn btn-accent btn-sm" onclick="generarPDFProfesorParteCompleto()">📄 Exportar parte seleccionado a PDF</button>
-        <button class="btn btn-primary btn-sm" onclick="generarPDFProfesorTodosPartesCompletos()">📄 Exportar TODOS los partes a PDF</button>
+        <button class="btn btn-primary btn-sm" onclick="generarPDFProfesorTodosPartesCompletos()">📄 Exportar TODOS a un único PDF</button>
       </div>
     </div>
   `;
+  setupInformesFiltros();
   infProfAlumnoSetup();
   infProfGrupoSetup();
 }
 
 window.generarPDFProfesorGeneral = () => {
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const myPartes = cachedPartes.filter(p => p.profesorId === currentUserUid && (esParteDelCurso(p, cursoActivo)));
+  const cursoActivo = informesCursoSel();
+  const myPartes = filtrarPartesInforme(cachedPartes.filter(p => p.profesorId === currentUserUid));
   const abiertos = myPartes.filter(p=>p.estado!=='cerrado').length;
   const cerrados = myPartes.filter(p=>p.estado==='cerrado').length;
   const ccn = myPartes.filter(p=>p.tipo==='CCNC').length;
@@ -4766,7 +5213,7 @@ window.generarPDFProfesorGeneral = () => {
   myPartes.forEach(p => { porConducta[p.conductaId] = (porConducta[p.conductaId]||0)+1; });
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de partes', `Profesor: ${currentUser.nombre}`, `Curso ${cursoActivo} · Generado el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de partes', `Profesor: ${currentUser.nombre}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen general</h3>
       <div class="stat-grid">
@@ -4791,7 +5238,7 @@ window.generarPDFProfesorGeneral = () => {
     </div>
     <div class="print-section">
       <h3>Listado completo de partes (orden cronológico inverso)</h3>
-      ${myPartes.sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0)).map(p => printParteItem(p)).join('')}
+      ${myPartes.sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0)).map(p => printParteItem(p)).join('')}
     </div>
   `;
   imprimirInforme();
@@ -4801,12 +5248,11 @@ window.infProfAlumnoChange = () => {
   const alumno = $('infProfAlumno').value;
   const div = $('infProfAlumnoResult');
   if(!alumno){ div.innerHTML = ''; return; }
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && p.alumnoNombre === alumno && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => p.profesorId === currentUserUid && p.alumnoNombre === alumno))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   div.innerHTML = `
     <div style="margin-bottom:8px"><strong>${partes.length} partes</strong> para ${escapeHtml(alumno)}</div>
-    <button class="btn btn-primary btn-sm" onclick="generarPDFProfesorAlumno('${escapeHtml(alumno).replace(/'/g,"\\'")}')">📄 Exportar a PDF</button>
+    <button class="btn btn-primary btn-sm" onclick="generarPDFProfesorAlumno(document.getElementById('infProfAlumno').value)">📄 Exportar a PDF</button>
     <div style="margin-top:10px">${partes.map(p => renderParteCard(p)).join('')}</div>
   `;
 };
@@ -4818,16 +5264,16 @@ window.infProfAlumnoSetup = () => {
 };
 
 window.generarPDFProfesorAlumno = (alumno) => {
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && p.alumnoNombre === alumno && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
+  const cursoActivo = informesCursoSel();
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => p.profesorId === currentUserUid && p.alumnoNombre === alumno))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   const ccn = partes.filter(p=>p.tipo==='CCNC').length;
   const cgpc = partes.filter(p=>p.tipo==='CGPC').length;
   const abiertos = partes.filter(p=>p.estado!=='cerrado').length;
   const cerrados = partes.filter(p=>p.estado==='cerrado').length;
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de partes por alumno', `${alumno}`, `Profesor: ${currentUser.nombre} · Curso ${cursoActivo} · Generado el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de partes por alumno', `${alumno}`, `Profesor: ${currentUser.nombre} · Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen</h3>
       <div class="stat-grid">
@@ -4853,12 +5299,11 @@ window.infProfGrupoChange = () => {
   const grupo = $('infProfGrupo').value;
   const div = $('infProfGrupoResult');
   if(!grupo){ div.innerHTML = ''; return; }
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && p.grupo === grupo && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => p.profesorId === currentUserUid && p.grupo === grupo))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   div.innerHTML = `
     <div style="margin-bottom:8px"><strong>${partes.length} partes</strong> en el grupo ${escapeHtml(grupo)}</div>
-    <button class="btn btn-primary btn-sm" onclick="generarPDFProfesorGrupo('${escapeHtml(grupo).replace(/'/g,"\\'")}')">📄 Exportar a PDF</button>
+    <button class="btn btn-primary btn-sm" onclick="generarPDFProfesorGrupo(document.getElementById('infProfGrupo').value)">📄 Exportar a PDF</button>
     <div style="margin-top:10px">${partes.map(p => renderParteCard(p)).join('')}</div>
   `;
 };
@@ -4869,15 +5314,15 @@ window.infProfGrupoSetup = () => {
 };
 
 window.generarPDFProfesorGrupo = (grupo) => {
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && p.grupo === grupo && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
+  const cursoActivo = informesCursoSel();
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => p.profesorId === currentUserUid && p.grupo === grupo))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   // Por alumno
   const porAlumno = {};
   partes.forEach(p => { porAlumno[p.alumnoNombre] = (porAlumno[p.alumnoNombre]||0)+1; });
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de partes por grupo', `Grupo: ${grupo}`, `Profesor: ${currentUser.nombre} · Curso ${cursoActivo} · Generado el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de partes por grupo', `Grupo: ${grupo}`, `Profesor: ${currentUser.nombre} · Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen</h3>
       <div class="stat-grid">
@@ -4913,14 +5358,15 @@ function printParteCompleto(p, cursoActivo){
   const agravantesTexto = (p.agravantes && p.agravantes.length > 0)
     ? p.agravantes.map(id => { const a = AGRAVANTES.find(x=>x.id===id); return a ? a.texto : id; }).join('; ')
     : 'No hay';
-  const tipoCompleto = p.tipo === 'CCNC'
+  const tipo = p.tipo || (String(p.conductaId||'').indexOf('CGPC') === 0 ? 'CGPC' : 'CCNC');
+  const tipoCompleto = tipo === 'CCNC'
     ? 'Conducta Contraria a las Normas de Convivencia'
     : 'Conducta Gravemente Perjudicial para la Convivencia';
   return `
     <div class="parte-completo" style="page-break-after:always;margin-bottom:20px;font-family:'Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif;color:#1f2933">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">
         <div style="font-size:16px;font-weight:700;color:#1e3a5f;line-height:1.3;padding-top:4px">IES VIRGEN DE<br>VILLADIEGO</div>
-        <img src="logo.svg" style="height:30mm;width:auto;object-fit:contain" alt="Logo IES Virgen de Villadiego">
+        <img src="logo.svg" style="height:30mm;width:auto;object-fit:contain" alt="Logo IES Virgen de Villadiego" onerror="this.style.display='none'">
       </div>
       <div style="text-align:center;margin-bottom:16px">
         <div style="font-size:18px;font-weight:700;color:#1e3a5f;text-transform:uppercase;letter-spacing:1px">Comunicación de Parte de Incidencias</div>
@@ -4940,7 +5386,11 @@ function printParteCompleto(p, cursoActivo){
         <div style="font-size:14px;font-weight:700;color:#1e3a5f;border-bottom:2px solid #1e3a5f;padding-bottom:4px;margin-bottom:8px">TIPIFICACIÓN DE LA CONDUCTA</div>
         <table style="width:100%;border-collapse:collapse;font-size:13px">
           <tr>
-            <td style="border:1px solid #ccc;padding:8px;font-weight:600;background:#f7f9fc;width:15%">Código</td>
+            <td style="border:1px solid #ccc;padding:8px;font-weight:600;background:#f7f9fc;width:15%">Tipo</td>
+            <td style="border:1px solid #ccc;padding:8px">${escapeHtml(tipoCompleto)}</td>
+          </tr>
+          <tr>
+            <td style="border:1px solid #ccc;padding:8px;font-weight:600;background:#f7f9fc">Código</td>
             <td style="border:1px solid #ccc;padding:8px"><strong>${escapeHtml(p.conductaId)}</strong></td>
           </tr>
           <tr>
@@ -4982,8 +5432,8 @@ window.generarPDFProfesorParteCompleto = () => {
   if(!parteId){ toast('Selecciona un parte','error'); return; }
   const p = cachedPartes.find(x => x.id === parteId);
   if(!p){ toast('Parte no encontrado','error'); return; }
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  $('printContainer').innerHTML = printParteCompleto(p, cursoActivo);
+  // El documento muestra el curso al que PERTENECE el parte (no el activo)
+  $('printContainer').innerHTML = printParteCompleto(p, p.cursoEscolar || parteCursoEscolar(p));
   // Nombre de archivo: Notificacion_NombreDelAlumno_FechaDelIncidente
   const nombreAlumno = sanitizeFilename(p.alumnoNombre || 'alumno');
   const fechaIncidente = fmtFecha(p.fechaIncidente).replace(/\//g, '-');
@@ -4991,45 +5441,20 @@ window.generarPDFProfesorParteCompleto = () => {
   imprimirInforme(filename);
 };
 
-window.generarPDFProfesorTodosPartesCompletos = async () => {
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorId === currentUserUid && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
-  if(partes.length === 0){ toast('No tienes partes en este curso','error'); return; }
+window.generarPDFProfesorTodosPartesCompletos = () => {
+  const cursoActivo = informesCursoSel();
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => p.profesorId === currentUserUid))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
+  if(partes.length === 0){ toast('No hay partes que coincidan con los filtros seleccionados','error'); return; }
 
-  toast(`Descargando ${partes.length} documentos...`, 'info');
-
-  const nombresUsados = {};
-
-  for(let i = 0; i < partes.length; i++){
-    const p = partes[i];
-    const htmlContent = printParteCompleto(p, cursoActivo);
-    const nombreAlumno = sanitizeFilename(p.alumnoNombre || 'alumno');
-    const fechaIncidente = fmtFecha(p.fechaIncidente).replace(/\//g, '-');
-    let filename = `Notificacion_${nombreAlumno}_${fechaIncidente}`;
-    if(nombresUsados[filename]){
-      nombresUsados[filename]++;
-      filename += `_${nombresUsados[filename]}`;
-    } else {
-      nombresUsados[filename] = 1;
-    }
-
-    const fullHtml = '<!DOCTYPE html>\n<html lang="es">\n<head>\n<meta charset="UTF-8">\n<title>' + filename + '</title>\n<style>\n@page { size: A4; margin: 15mm; }\nbody { font-family: sans-serif; color: #1f2933; margin: 0; padding: 0; }\nimg { max-width: 100%; }\ntable { width: 100%; border-collapse: collapse; }\n</style>\n</head>\n<body>\n' + htmlContent + '\n</body>\n</html>';
-
-    const blob = new Blob([fullHtml], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${filename}.html`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-    // Pequeña pausa entre descargas para que el navegador no las bloquee
-    await new Promise(r => setTimeout(r, 300));
-  }
-
-  toast(`${partes.length} documentos descargados`, 'success');
+  // Genera un único documento con todos los partes (un parte por página)
+  // que se exporta a PDF desde el diálogo de impresión del navegador
+  // ("Guardar como PDF"). Antes se descargaban archivos .html sueltos y
+  // los navegadores bloqueaban las descargas múltiples automáticas,
+  // por lo que en la práctica solo llegaba el primer archivo.
+  $('printContainer').innerHTML = partes.map(p => printParteCompleto(p, cursoActivo)).join('');
+  const nombreProfesor = sanitizeFilename(currentUser.nombre || 'profesor');
+  imprimirInforme(`Notificaciones_${nombreProfesor}_${cursoActivo}`);
 };
 
 /* === INFORMES DEL TUTOR === */
@@ -5039,12 +5464,16 @@ function renderInformesTutor(c, cursoActivo){
     c.innerHTML = `<div class="page-title">Informes</div><div class="empty-state"><p>No tienes grupo de tutoría asignado.</p></div>`;
     return;
   }
-  const partesTutoria = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && (esParteDelCurso(p, cursoActivo)));
-  const alumnosUnicos = [...new Set(partesTutoria.map(p => p.alumnoNombre))].sort();
+  const partesTutoriaBase = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo));
+  // Se aplican los filtros de la vista (curso seleccionado + período)
+  const partesTutoria = filtrarPartesInforme(partesTutoriaBase);
+  const alumnosUnicos = [...new Set(partesTutoria.map(p => p.alumnoNombre).filter(Boolean))].sort();
 
   c.innerHTML = `
     <div class="page-title">Informes</div>
-    <div class="page-subtitle">Tutoría: ${escapeHtml(tutoriaGrupo)} · Curso ${escapeHtml(cursoActivo)}</div>
+    <div class="page-subtitle">Tutoría: ${escapeHtml(tutoriaGrupo)} · Curso ${escapeHtml(informesCursoSel())}</div>
+
+    ${informesFiltrosHTML(partesTutoriaBase)}
 
     <div class="card">
       <div class="card-title"><span>📊 Estadística general de la tutoría</span></div>
@@ -5059,9 +5488,9 @@ function renderInformesTutor(c, cursoActivo){
 
     <div class="card">
       <div class="card-title"><span>👤 Informe por alumno (orden cronológico inverso)</span></div>
-      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">Selecciona un alumno para ver todos sus partes y exportarlos a PDF.</p>
+      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${partesTutoria.length === 0 ? 'No hay partes que coincidan con los filtros seleccionados: prueba a cambiar el curso o el período de arriba.' : 'Selecciona un alumno para ver todos sus partes y exportarlos a PDF.'}</p>
       <select id="infTutorAlumno" class="form-control" style="max-width:400px;margin-bottom:10px">
-        <option value="">— Selecciona alumno —</option>
+        <option value="">${alumnosUnicos.length ? '— Selecciona alumno —' : '— Sin resultados —'}</option>
         ${alumnosUnicos.map(a => {
           const count = partesTutoria.filter(p => p.alumnoNombre === a).length;
           return `<option value="${escapeHtml(a)}">${escapeHtml(a)} (${count} partes)</option>`;
@@ -5070,13 +5499,14 @@ function renderInformesTutor(c, cursoActivo){
       <div id="infTutorAlumnoResult"></div>
     </div>
   `;
+  setupInformesFiltros();
   infTutorAlumnoSetup();
 }
 
 window.generarPDFTutorGeneral = () => {
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
+  const cursoActivo = informesCursoSel();
   const tutoriaGrupo = getEffectiveTutoriaGrupo();
-  const partes = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && (esParteDelCurso(p, cursoActivo)));
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo)));
   const porAlumno = {};
   partes.forEach(p => { porAlumno[p.alumnoNombre] = (porAlumno[p.alumnoNombre]||0)+1; });
   const porConducta = {};
@@ -5085,7 +5515,7 @@ window.generarPDFTutorGeneral = () => {
   partes.forEach(p => { porProfesor[p.profesorNombre||'—'] = (porProfesor[p.profesorNombre||'—']||0)+1; });
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de tutoría', `Grupo: ${tutoriaGrupo}`, `Curso ${cursoActivo} · Generado el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de tutoría', `Grupo: ${tutoriaGrupo}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen general</h3>
       <div class="stat-grid">
@@ -5132,13 +5562,12 @@ window.infTutorAlumnoChange = () => {
   const alumno = $('infTutorAlumno').value;
   const div = $('infTutorAlumnoResult');
   if(!alumno){ div.innerHTML = ''; return; }
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
   const tutoriaGrupo = getEffectiveTutoriaGrupo();
-  const partes = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && p.alumnoNombre === alumno && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && p.alumnoNombre === alumno))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   div.innerHTML = `
     <div style="margin-bottom:8px"><strong>${partes.length} partes</strong> para ${escapeHtml(alumno)}</div>
-    <button class="btn btn-primary btn-sm" onclick="generarPDFTutorAlumno('${escapeHtml(alumno).replace(/'/g,"\\'")}')">📄 Exportar a PDF</button>
+    <button class="btn btn-primary btn-sm" onclick="generarPDFTutorAlumno(document.getElementById('infTutorAlumno').value)">📄 Exportar a PDF</button>
     <div style="margin-top:10px">${partes.map(p => renderParteCard(p)).join('')}</div>
   `;
 };
@@ -5149,13 +5578,13 @@ window.infTutorAlumnoSetup = () => {
 };
 
 window.generarPDFTutorAlumno = (alumno) => {
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
+  const cursoActivo = informesCursoSel();
   const tutoriaGrupo = getEffectiveTutoriaGrupo();
-  const partes = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && p.alumnoNombre === alumno && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo) && p.alumnoNombre === alumno))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de alumno', `${alumno} · Grupo ${tutoriaGrupo}`, `Curso ${cursoActivo} · Generado el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de alumno', `${alumno} · Grupo ${tutoriaGrupo}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen</h3>
       <div class="stat-grid">
@@ -5179,14 +5608,18 @@ window.generarPDFTutorAlumno = (alumno) => {
 
 /* === INFORMES DEL ADMIN === */
 function renderInformesAdmin(c, cursoActivo){
-  const todasPartes = cachedPartes.filter(p => esParteDelCurso(p, cursoActivo));
-  const alumnosUnicos = [...new Set(todasPartes.map(p => p.alumnoNombre))].sort();
+  // Se aplican los filtros de la vista (curso seleccionado + período)
+  const todasPartes = filtrarPartesInforme(cachedPartes);
+  const alumnosUnicos = [...new Set(todasPartes.map(p => p.alumnoNombre).filter(Boolean))].sort();
   const gruposUnicos = [...new Set(todasPartes.map(p => p.grupo).filter(Boolean))].sort();
   const profesoresUnicos = [...new Set(todasPartes.map(p => p.profesorNombre).filter(Boolean))].sort();
+  const sinResultados = todasPartes.length === 0;
 
   c.innerHTML = `
     <div class="page-title">Informes</div>
-    <div class="page-subtitle">Estadísticas del centro · Curso ${escapeHtml(cursoActivo)}</div>
+    <div class="page-subtitle">Estadísticas del centro · Curso ${escapeHtml(informesCursoSel())}</div>
+
+    ${informesFiltrosHTML(cachedPartes)}
 
     <div class="card">
       <div class="card-title"><span>📊 Estadística general del centro</span></div>
@@ -5201,9 +5634,9 @@ function renderInformesAdmin(c, cursoActivo){
 
     <div class="card">
       <div class="card-title"><span>👤 Informe por alumno</span></div>
-      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">Los partes del alumno se muestran en orden cronológico inverso.</p>
+      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${sinResultados ? 'No hay partes que coincidan con los filtros seleccionados: prueba a cambiar el curso o el período de arriba.' : 'Los partes del alumno se muestran en orden cronológico inverso.'}</p>
       <select id="infAdminAlumno" class="form-control" style="max-width:400px;margin-bottom:10px">
-        <option value="">— Selecciona alumno —</option>
+        <option value="">${alumnosUnicos.length ? '— Selecciona alumno —' : '— Sin resultados —'}</option>
         ${alumnosUnicos.map(a => {
           const count = todasPartes.filter(p => p.alumnoNombre === a).length;
           return `<option value="${escapeHtml(a)}">${escapeHtml(a)} (${count} partes)</option>`;
@@ -5214,8 +5647,9 @@ function renderInformesAdmin(c, cursoActivo){
 
     <div class="card">
       <div class="card-title"><span>🏫 Informe por grupo</span></div>
+      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${sinResultados ? 'No hay partes que coincidan con los filtros seleccionados.' : 'Selecciona un grupo para ver el detalle y exportarlo a PDF.'}</p>
       <select id="infAdminGrupo" class="form-control" style="max-width:400px;margin-bottom:10px">
-        <option value="">— Selecciona grupo —</option>
+        <option value="">${gruposUnicos.length ? '— Selecciona grupo —' : '— Sin resultados —'}</option>
         ${gruposUnicos.map(g => {
           const count = todasPartes.filter(p => p.grupo === g).length;
           return `<option value="${escapeHtml(g)}">${escapeHtml(g)} (${count} partes)</option>`;
@@ -5226,8 +5660,9 @@ function renderInformesAdmin(c, cursoActivo){
 
     <div class="card">
       <div class="card-title"><span>👨‍🏫 Informe por profesor</span></div>
+      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${sinResultados ? 'No hay partes que coincidan con los filtros seleccionados.' : 'Selecciona un profesor para ver el detalle y exportarlo a PDF.'}</p>
       <select id="infAdminProfesor" class="form-control" style="max-width:400px;margin-bottom:10px">
-        <option value="">— Selecciona profesor —</option>
+        <option value="">${profesoresUnicos.length ? '— Selecciona profesor —' : '— Sin resultados —'}</option>
         ${profesoresUnicos.map(p => {
           const count = todasPartes.filter(pt => pt.profesorNombre === p).length;
           return `<option value="${escapeHtml(p)}">${escapeHtml(p)} (${count} partes)</option>`;
@@ -5235,15 +5670,18 @@ function renderInformesAdmin(c, cursoActivo){
       </select>
       <div id="infAdminProfesorResult"></div>
     </div>
+
+    ${diagnosticoPartesHTML()}
   `;
+  setupInformesFiltros();
   infAdminAlumnoSetup();
   infAdminGrupoSetup();
   infAdminProfesorSetup();
 }
 
 window.generarPDFAdminGeneral = () => {
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => esParteDelCurso(p, cursoActivo));
+  const cursoActivo = informesCursoSel();
+  const partes = filtrarPartesInforme(cachedPartes);
   const porAlumno = {}; partes.forEach(p => { porAlumno[p.alumnoNombre] = (porAlumno[p.alumnoNombre]||0)+1; });
   const porConducta = {}; partes.forEach(p => { porConducta[p.conductaId] = (porConducta[p.conductaId]||0)+1; });
   const porGrupo = {}; partes.forEach(p => { if(p.grupo) porGrupo[p.grupo] = (porGrupo[p.grupo]||0)+1; });
@@ -5252,7 +5690,7 @@ window.generarPDFAdminGeneral = () => {
   const porAgravante = {}; partes.forEach(p => { (p.agravantes||[]).forEach(a => { porAgravante[a] = (porAgravante[a]||0)+1; }); });
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe general del centro', `Curso ${cursoActivo}`, `Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe general del centro', `Curso ${cursoActivo} · ${informesPeriodoLabel()}`, `Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen general</h3>
       <div class="stat-grid">
@@ -5335,12 +5773,11 @@ window.infAdminAlumnoChange = () => {
   const alumno = $('infAdminAlumno').value;
   const div = $('infAdminAlumnoResult');
   if(!alumno){ div.innerHTML = ''; return; }
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.alumnoNombre === alumno && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => p.alumnoNombre === alumno))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   div.innerHTML = `
     <div style="margin-bottom:8px"><strong>${partes.length} partes</strong> para ${escapeHtml(alumno)}</div>
-    <button class="btn btn-primary btn-sm" onclick="generarPDFAdminAlumno('${escapeHtml(alumno).replace(/'/g,"\\'")}')">📄 Exportar a PDF</button>
+    <button class="btn btn-primary btn-sm" onclick="generarPDFAdminAlumno(document.getElementById('infAdminAlumno').value)">📄 Exportar a PDF</button>
     <div style="margin-top:10px">${partes.map(p => renderParteCard(p)).join('')}</div>
   `;
 };
@@ -5351,13 +5788,13 @@ window.infAdminAlumnoSetup = () => {
 };
 
 window.generarPDFAdminAlumno = (alumno) => {
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.alumnoNombre === alumno && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
+  const cursoActivo = informesCursoSel();
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => p.alumnoNombre === alumno))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   const grupo = partes[0]?.grupo || '—';
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de alumno', `${alumno} · Grupo ${grupo}`, `Curso ${cursoActivo} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de alumno', `${alumno} · Grupo ${grupo}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen</h3>
       <div class="stat-grid">
@@ -5389,12 +5826,11 @@ window.infAdminGrupoChange = () => {
   const grupo = $('infAdminGrupo').value;
   const div = $('infAdminGrupoResult');
   if(!grupo){ div.innerHTML = ''; return; }
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.grupo === grupo && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => p.grupo === grupo))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   div.innerHTML = `
     <div style="margin-bottom:8px"><strong>${partes.length} partes</strong> en el grupo ${escapeHtml(grupo)}</div>
-    <button class="btn btn-primary btn-sm" onclick="generarPDFAdminGrupo('${escapeHtml(grupo).replace(/'/g,"\\'")}')">📄 Exportar a PDF</button>
+    <button class="btn btn-primary btn-sm" onclick="generarPDFAdminGrupo(document.getElementById('infAdminGrupo').value)">📄 Exportar a PDF</button>
     <div style="margin-top:10px">${partes.map(p => renderParteCard(p)).join('')}</div>
   `;
 };
@@ -5405,14 +5841,14 @@ window.infAdminGrupoSetup = () => {
 };
 
 window.generarPDFAdminGrupo = (grupo) => {
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.grupo === grupo && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
+  const cursoActivo = informesCursoSel();
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => p.grupo === grupo))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   const porAlumno = {}; partes.forEach(p => { porAlumno[p.alumnoNombre] = (porAlumno[p.alumnoNombre]||0)+1; });
   const porProfesor = {}; partes.forEach(p => { porProfesor[p.profesorNombre||'—'] = (porProfesor[p.profesorNombre||'—']||0)+1; });
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de grupo', `Grupo: ${grupo}`, `Curso ${cursoActivo} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de grupo', `Grupo: ${grupo}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen</h3>
       <div class="stat-grid">
@@ -5453,12 +5889,11 @@ window.infAdminProfesorChange = () => {
   const profesor = $('infAdminProfesor').value;
   const div = $('infAdminProfesorResult');
   if(!profesor){ div.innerHTML = ''; return; }
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorNombre === profesor && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => p.profesorNombre === profesor))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   div.innerHTML = `
     <div style="margin-bottom:8px"><strong>${partes.length} partes</strong> puestos por ${escapeHtml(profesor)}</div>
-    <button class="btn btn-primary btn-sm" onclick="generarPDFAdminProfesor('${escapeHtml(profesor).replace(/'/g,"\\'")}')">📄 Exportar a PDF</button>
+    <button class="btn btn-primary btn-sm" onclick="generarPDFAdminProfesor(document.getElementById('infAdminProfesor').value)">📄 Exportar a PDF</button>
     <div style="margin-top:10px">${partes.map(p => renderParteCard(p)).join('')}</div>
   `;
 };
@@ -5469,14 +5904,14 @@ window.infAdminProfesorSetup = () => {
 };
 
 window.generarPDFAdminProfesor = (profesor) => {
-  const cursoActivo = cachedCursoActivo || getCurrentCursoByDate();
-  const partes = cachedPartes.filter(p => p.profesorNombre === profesor && (esParteDelCurso(p, cursoActivo)))
-    .sort((a,b)=>(b.fechaIncidente||0)-(a.fechaIncidente||0));
+  const cursoActivo = informesCursoSel();
+  const partes = filtrarPartesInforme(cachedPartes.filter(p => p.profesorNombre === profesor))
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   const porAlumno = {}; partes.forEach(p => { porAlumno[p.alumnoNombre] = (porAlumno[p.alumnoNombre]||0)+1; });
   const porGrupo = {}; partes.forEach(p => { if(p.grupo) porGrupo[p.grupo] = (porGrupo[p.grupo]||0)+1; });
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de profesor', `${profesor}`, `Curso ${cursoActivo} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de profesor', `${profesor}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen</h3>
       <div class="stat-grid">
