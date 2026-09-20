@@ -889,8 +889,10 @@ const MEDIOS_NOTIFICACION = ['Presencial', 'iPasen', 'Teléfono', 'E-mail'];
 /* ===== Cursos escolares =====
  * Un curso escolar va del 1 de septiembre de un año al 31 de agosto del
  * año siguiente. Se identifica con el formato "YYYY-YYYY" (ej: 2025-2026).
- * El curso 2025-2026 es el curso de partida y no se puede eliminar.
- * Solo el admin puede crear, editar, eliminar y cambiar el curso activo.
+ * El curso 2025-2026 es el curso de partida.
+ * Solo el admin puede crear, editar y cambiar el curso activo.
+ * NINGÚN curso se puede eliminar (vigente o vencido): los datos de cada
+ * año se conservan como histórico y solo el curso activo es consultable.
  * El curso activo se almacena en convivencia_iesvdv/config/cursoActivo y
  * la lista de cursos en convivencia_iesvdv/cursos.
  */
@@ -927,6 +929,29 @@ const parteCursoEscolar = (p) => {
 const cursoActivoActual = () => cachedCursoActivo || getCurrentCursoByDate();
 /* ¿Pertenece el parte al curso indicado? — aislamiento estricto entre cursos */
 const esParteDelCurso = (p, curso) => parteCursoEscolar(p) === curso;
+
+/* ===== Aislamiento de datos por año escolar =====
+ * Solo los datos del curso activo (vigente) son consultables en la
+ * aplicación. Los cursos vencidos quedan archivados: no se pueden
+ * consultar ni eliminar, para conservar el histórico del centro. */
+const esParteDelCursoActivo = (p) => esParteDelCurso(p, cursoActivoActual());
+
+/* Curso escolar (año "YYYY-YYYY") al que pertenece un alumno importado.
+ * Si el campo no existe o no tiene formato de año escolar (datos
+ * antiguos o introducidos a mano con otro formato), devuelve null y el
+ * alumno se trata como del curso vigente para no ocultarlo por un
+ * formato inesperado. */
+const studentCursoEscolar = (s) => {
+  const c = s && s.curso;
+  if(typeof c === 'string' && /^\d{4}\s*-\s*\d{4}$/.test(c.trim())) return c.trim().replace(/\s+/g, '');
+  return null;
+};
+
+/* ¿Pertenece el alumno al curso activo? (año desconocido → sí) */
+const esAlumnoDelCursoActivo = (s) => { const cc = studentCursoEscolar(s); return cc === null || cc === cursoActivoActual(); };
+
+/* Alumnado consultable: solo el del curso activo (aislamiento por año) */
+const activeYearStudents = () => cachedStudents.filter(esAlumnoDelCursoActivo);
 
 /* Parsea una fecha de incidente en cualquier formato habitual:
  * - número (ms desde epoch: el formato nativo de la app)
@@ -2130,10 +2155,9 @@ function renderDashboard(c){
     avisoCurso = `
     <div class="card" style="border-left:4px solid #e8a93c;background:linear-gradient(135deg,#fdf3d8,#fef9e7);margin-bottom:16px">
       <div style="font-weight:600">⚠️ No hay ningún parte en el curso activo (${escapeHtml(cursoAhora)})</div>
-      <div style="font-size:13px;color:var(--c-text-soft);margin-top:4px">Hay ${baseRol.length} parte(s) archivados en: ${otros.map(cc => `<strong>${escapeHtml(cc)}</strong> (${cursosDisponibles[cc]})`).join(' · ')}. Si acaba de empezar un curso escolar nuevo, créalo y actívalo en la gestión de cursos, o consulta los informes del curso donde están los datos.</div>
+      <div style="font-size:13px;color:var(--c-text-soft);margin-top:4px">Hay ${baseRol.length} parte(s) archivados en: ${otros.map(cc => `<strong>${escapeHtml(cc)}</strong> (${cursosDisponibles[cc]})`).join(' · ')}. Los datos de cada año están aislados: los cursos vencidos no se pueden consultar. ${isRealAdmin() ? 'Si acaba de empezar un curso escolar nuevo, créalo y actívalo en la gestión de cursos; si hay partes que pertenecen a este curso, reasignalos desde el diagnóstico de la vista de informes.' : 'Avisa a la administración del centro para que active el curso correcto o reasigne los partes que correspondan a este curso.'}</div>
       <div class="flex gap-8 flex-wrap" style="margin-top:10px">
-        <button class="btn btn-secondary btn-sm" onclick="__verInformesCurso('${otros[0]}')">📄 Ver informes de ${escapeHtml(otros[0])}</button>
-        ${isRealAdmin() ? `<button class="btn btn-primary btn-sm" onclick="navigate('cursos')">⚙️ Gestionar cursos</button>` : ''}
+        ${isRealAdmin() ? `<button class="btn btn-secondary btn-sm" onclick="navigate('informes')">🩺 Diagnóstico de datos</button><button class="btn btn-primary btn-sm" onclick="navigate('cursos')">⚙️ Gestionar cursos</button>` : ''}
       </div>
     </div>`;
   } else if(isRealAdmin() && cachedCursoActivo && getCurrentCursoByDate() !== cachedCursoActivo){
@@ -2242,7 +2266,9 @@ function renderParteCard(p){
 
 /* ===== Nuevo Parte ===== */
 function renderNuevoParte(c){
-  const grupos = [...new Set(cachedStudents.map(s=>s.grupo).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es'));
+  // Aislamiento por año: solo el alumnado del curso activo es seleccionable
+  const alumnosAnyo = activeYearStudents();
+  const grupos = [...new Set(alumnosAnyo.map(s=>s.grupo).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es'));
   c.innerHTML = `
     <div class="page-title">Nuevo parte de incidencias</div>
     <div class="page-subtitle">Registra una conducta contraria o gravemente perjudicial para la convivencia</div>
@@ -2251,7 +2277,7 @@ function renderNuevoParte(c){
       <div class="card-title">Datos del parte</div>
       <div class="form-group">
         <label>Alumnado <span class="required">*</span></label>
-        ${cachedStudents.length === 0 ? '<div class="form-hint text-warning">⚠ No hay alumnado importado. Pide al administrador que importe el listado desde Séneca.</div>' : `
+        ${alumnosAnyo.length === 0 ? `<div class="form-hint text-warning">⚠ ${cachedStudents.length === 0 ? 'No hay alumnado importado. Pide al administrador que importe el listado desde Séneca.' : `No hay alumnado del curso activo (${escapeHtml(cursoActivoActual())}): el registrado pertenece a cursos anteriores, ya archivados. ${isRealAdmin() ? 'Impórtalo desde la sección de Alumnado.' : 'Pide al administrador que importe el listado de este curso desde Séneca.'}`}</div>` : `
         <div class="group-chips" id="npGroupChips">
           <div class="group-chip all active" onclick="filterAlumnoSelect('')">Todos</div>
           ${grupos.map(g => `<div class="group-chip" onclick="filterAlumnoSelect('${escapeHtml(g).replace(/'/g,"\\'")}')">${escapeHtml(g)}</div>`).join('')}
@@ -2259,9 +2285,9 @@ function renderNuevoParte(c){
         <input type="text" id="npAlumnoSearch" class="form-control" placeholder="Buscar por nombre..." oninput="filterAlumnoSelect()" style="margin-bottom:8px">
         <select id="npAlumno" class="form-control" onchange="actualizarPreviewUbicacion()">
           <option value="">— Selecciona alumno/a —</option>
-          ${cachedStudents.map(s => `<option value="${s.id}" data-grupo="${escapeHtml(s.grupo||'')}" data-nombre="${escapeHtml((s.nombre||'').toLowerCase())}">${escapeHtml(s.nombre)} (${escapeHtml(s.grupo||'')})</option>`).join('')}
+          ${alumnosAnyo.map(s => `<option value="${s.id}" data-grupo="${escapeHtml(s.grupo||'')}" data-nombre="${escapeHtml((s.nombre||'').toLowerCase())}">${escapeHtml(s.nombre)} (${escapeHtml(s.grupo||'')})</option>`).join('')}
         </select>
-        <div class="form-hint" id="npAlumnoCount">${cachedStudents.length} alumnos/as visibles</div>
+        <div class="form-hint" id="npAlumnoCount">${alumnosAnyo.length} alumnos/as visibles · curso ${escapeHtml(cursoActivoActual())}</div>
         `}
       </div>
 
@@ -2972,6 +2998,13 @@ window.openParteDetail = (parteId) => {
   const p = cachedPartes.find(x => x.id === parteId);
   if(!p){ toast('Este parte ya no existe. Recarga la página para actualizar la lista.','error'); return; }
 
+  // Aislamiento por año: los partes de cursos vencidos están archivados
+  // y no se pueden consultar (solo el curso activo es consultable)
+  if(!esParteDelCursoActivo(p)){
+    toast(`Este parte pertenece al curso ${parteCursoEscolar(p)}, que está archivado. Solo se pueden consultar los datos del curso activo (${cursoActivoActual()}).`,'error');
+    return;
+  }
+
   // Permissions: editar=solo propietario; cerrar=admin o tutor del grupo; eliminar=solo admin
   const isOwner = p.profesorId === currentUserUid;
   const realIsAdmin = isRealAdmin();
@@ -3247,6 +3280,8 @@ window.epSelectRespiro = (si) => {
 window.guardarEdicionParte = async (parteId) => {
   const p = cachedPartes.find(x => x.id === parteId);
   if(!p) return;
+  // Aislamiento por año: los partes archivados no se pueden modificar
+  if(!esParteDelCursoActivo(p)){ toast('Los partes de cursos anteriores están archivados: no se pueden modificar.','error'); return; }
   const fecha = $('epFecha').value;
   const hora = $('epHora').value;
   let ubicacion = $('epUbicacion').value.trim();
@@ -3356,6 +3391,8 @@ window.notificarTutor = async (parteId) => {
 window.cerrarParte = (parteId) => {
   const p = cachedPartes.find(x => x.id === parteId);
   if(!p) return;
+  // Aislamiento por año: los partes archivados no se pueden cerrar
+  if(!esParteDelCursoActivo(p)){ toast('Los partes de cursos anteriores están archivados: no se pueden cerrar.','error'); return; }
   const body = `
     <p style="margin-bottom:12px">Vas a cerrar el parte <strong>${p.conductaId}</strong> de <strong>${escapeHtml(p.alumnoNombre)}</strong>. Esta acción la puede realizar el administrador.</p>
     <div class="form-group">
@@ -3387,6 +3424,12 @@ window.confirmarCierreParte = async (parteId) => {
 
 /* ===== Eliminar parte ===== */
 window.eliminarParte = async (parteId) => {
+  // Aislamiento por año: los datos de cursos vencidos están protegidos
+  const pElim = cachedPartes.find(x => x.id === parteId);
+  if(pElim && !esParteDelCursoActivo(pElim)){
+    toast('No se puede eliminar: los partes de cursos anteriores están archivados y protegidos como histórico.','error');
+    return;
+  }
   if(!confirm('¿Eliminar este parte definitivamente? Esta acción no se puede deshacer.')) return;
   try{
     await remove(ref(db, `${DB_ROOT}/partes/${parteId}`));
@@ -3433,19 +3476,26 @@ function renderAlumnado(c){
   // - admin real: cualquier grupo
   // - entorno tutor: solo su grupo de tutoría efectivo
   const canEditGroup = (grupo) => realIsAdmin || (actingAsTutor && grupo === effTutoriaGrupo);
-  // Si está trabajando como tutor, solo verá SU grupo. En caso contrario, ve todos.
-  let visibleStudents = cachedStudents;
+  // Aislamiento por año: solo el alumnado del curso activo (vigente) es
+  // consultable; el de cursos anteriores queda archivado.
+  let visibleStudents = activeYearStudents();
   if(actingAsTutor && effTutoriaGrupo){
-    visibleStudents = cachedStudents.filter(s => s.grupo === effTutoriaGrupo);
+    visibleStudents = visibleStudents.filter(s => s.grupo === effTutoriaGrupo);
   }
   const grupos = [...new Set(visibleStudents.map(s=>s.grupo).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es'));
   c.innerHTML = `
     <div class="page-title">Alumnado</div>
     <div class="page-subtitle">
       ${actingAsTutor
-        ? `Grupo de tutoría: <strong>${escapeHtml(effTutoriaGrupo||'')}</strong> · ${visibleStudents.length} alumnos/as`
-        : `${visibleStudents.length} alumnos/as registrados · ${grupos.length} grupos`}
+        ? `Grupo de tutoría: <strong>${escapeHtml(effTutoriaGrupo||'')}</strong> · ${visibleStudents.length} alumnos/as · Curso ${escapeHtml(cursoActivoActual())}`
+        : `${visibleStudents.length} alumnos/as registrados · ${grupos.length} grupos · Curso ${escapeHtml(cursoActivoActual())}`}
     </div>
+
+    ${(cachedStudents.length > 0 && visibleStudents.length === 0) ? `
+    <div class="card" style="border-left:4px solid #e8a93c;background:linear-gradient(135deg,#fdf3d8,#fef9e7);margin-bottom:16px">
+      <div style="font-weight:600">⚠️ No hay alumnado del curso activo (${escapeHtml(cursoActivoActual())})</div>
+      <div style="font-size:13px;color:var(--c-text-soft);margin-top:4px">El alumnado registrado pertenece a cursos anteriores, que están archivados y no se pueden consultar. ${canImport ? `Importa el alumnado del curso activo desde Séneca (más abajo) para poder trabajar este curso.` : 'Avisa a la administración para que importe el alumnado de este curso desde Séneca.'}</div>
+    </div>` : ''}
 
     ${actingAsTutor ? `
     <div class="card" style="background:linear-gradient(135deg,#e3f4ea,#f0fdf4);border-color:var(--c-success)">
@@ -3458,7 +3508,7 @@ function renderAlumnado(c){
           <input type="text" id="nuevoAlumnoNombre" class="form-control" placeholder="Nombre y apellidos del nuevo alumno/a">
         </div>
         <div class="form-group" style="flex:1;margin:0">
-          <input type="text" id="nuevoAlumnoCurso" class="form-control" value="${new Date().getFullYear()}-${new Date().getFullYear()+1}" placeholder="Curso">
+          <input type="text" id="nuevoAlumnoCurso" class="form-control" value="${escapeHtml(cursoActivoActual())}" readonly title="Las incorporaciones siempre se asignan al curso activo (vigente)" style="background:#f7f9fc">
         </div>
       </div>
       <button class="btn btn-success btn-sm" style="margin-top:8px" onclick="anadirAlumnoTutor()">
@@ -3472,7 +3522,7 @@ function renderAlumnado(c){
       <div class="card-title">
         <span>🗑️ Eliminar grupo completo</span>
       </div>
-      <p style="font-size:13px;color:var(--c-text-soft);margin-bottom:12px">Pulsa un grupo para eliminar <strong>todo su alumnado</strong>. Útil antes de reimportar un grupo actualizado desde Séneca. También puedes elegir el curso si hay alumnos del mismo grupo en cursos distintos.</p>
+      <p style="font-size:13px;color:var(--c-text-soft);margin-bottom:12px">Pulsa un grupo para eliminar <strong>todo su alumnado del curso activo</strong>. Útil antes de reimportar un grupo actualizado desde Séneca. El alumnado de cursos anteriores está archivado y no se puede eliminar.</p>
       <div class="form-row" style="margin-bottom:10px">
         <div class="form-group" style="margin:0">
           <select id="eliminarGrupoSel" class="form-control">
@@ -3498,7 +3548,7 @@ function renderAlumnado(c){
       <div class="form-group">
         <label>Curso escolar que se va a importar <span class="required">*</span></label>
         <input type="text" id="importCurso" class="form-control" value="${cachedCursoActivo || getCurrentCursoByDate()}" placeholder="Ej: 2025-2026">
-        <div class="form-hint">Por defecto se usa el curso activo (${escapeHtml(cachedCursoActivo || getCurrentCursoByDate())}). Puedes cambiarlo si estás importando alumnado de un curso diferente.</div>
+        <div class="form-hint">Por defecto se usa el curso activo (${escapeHtml(cachedCursoActivo || getCurrentCursoByDate())}). Solo el alumnado del curso activo será visible en la aplicación; el importado en otros cursos queda archivado en su año.</div>
       </div>
       <div class="form-group">
         <label>Archivo Excel de Séneca <span class="required">*</span></label>
@@ -3558,7 +3608,8 @@ window.filterAluByGroup = (grupo) => {
 window.eliminarGrupoCompleto = async () => {
   const g = $('eliminarGrupoSel').value;
   const cu = $('eliminarCursoSel').value;
-  const alumnosAfectados = cachedStudents.filter(s => s.grupo === g && (!cu || s.curso === cu));
+  // Aislamiento por año: solo se ve afectado el alumnado del curso activo
+  const alumnosAfectados = cachedStudents.filter(s => s.grupo === g && esAlumnoDelCursoActivo(s) && (!cu || s.curso === cu));
   if(alumnosAfectados.length === 0){
     toast('No hay alumnado que coincida con esa selección','error');
     return;
@@ -3625,8 +3676,13 @@ window.filterAlu = () => {
 
 window.eliminarGrupoCompletoByName = (grupo) => {
   if(!confirm(`¿Eliminar TODO el alumnado del grupo ${grupo}?`)) return;
-  const toDelete = cachedStudents.filter(s => s.grupo === grupo);
-  if(toDelete.length === 0){ toast('No hay alumnos en ese grupo','error'); return; }
+  // Aislamiento por año: solo se elimina alumnado del curso activo
+  const todosGrupo = cachedStudents.filter(s => s.grupo === grupo);
+  const toDelete = todosGrupo.filter(esAlumnoDelCursoActivo);
+  if(toDelete.length === 0){
+    toast(todosGrupo.length > 0 ? 'Ese grupo solo tiene alumnado de cursos anteriores: está archivado y protegido.' : 'No hay alumnos en ese grupo','error');
+    return;
+  }
   const updates = {};
   toDelete.forEach(s => { updates[`${DB_ROOT}/students/${s.id}`] = null; });
   update(ref(db), updates)
@@ -3646,6 +3702,11 @@ window.eliminarAlumno = async (alumnoId) => {
   // Verificar permisos: admin real, o entorno tutor con grupo coincidente
   const alumno = cachedStudents.find(s => s.id === alumnoId);
   if(!alumno){ toast('Alumno no encontrado','error'); return; }
+  // Aislamiento por año: el alumnado de cursos anteriores está protegido
+  if(!esAlumnoDelCursoActivo(alumno)){
+    toast('No se puede eliminar: el alumnado de cursos anteriores está archivado y protegido como histórico.','error');
+    return;
+  }
   const realIsAdmin = isRealAdmin();
   const effRole = getEffectiveRole();
   const effTutoriaGrupo = getEffectiveTutoriaGrupo();
@@ -3668,7 +3729,8 @@ window.anadirAlumnoTutor = async () => {
   const effRole = getEffectiveRole();
   if(effRole !== 'tutor'){ toast('Solo puedes añadir alumnos desde el entorno de tutor','error'); return; }
   const nombre = $('nuevoAlumnoNombre').value.trim();
-  const curso = $('nuevoAlumnoCurso').value.trim();
+  // Aislamiento por año: las incorporaciones siempre van al curso activo
+  const curso = cursoActivoActual();
   const grupo = getEffectiveTutoriaGrupo();
   if(!nombre){ toast('Introduce el nombre del alumno/a','error'); return; }
   if(!grupo){ toast('No tienes grupo de tutoría asignado','error'); return; }
@@ -3718,7 +3780,8 @@ window.confirmarLimpiarGrupo = async () => {
   const c = $('limpiarCurso').value;
   if(!confirm(`¿Eliminar TODO el alumnado del grupo ${g}${c?` (curso ${c})`:''}?`)) return;
   try{
-    const toDelete = cachedStudents.filter(s => s.grupo === g && (!c || s.curso === c));
+    // Aislamiento por año: solo se elimina alumnado del curso activo
+    const toDelete = cachedStudents.filter(s => s.grupo === g && esAlumnoDelCursoActivo(s) && (!c || s.curso === c));
     for(const s of toDelete){
       await remove(ref(db, `${DB_ROOT}/students/${s.id}`));
     }
@@ -3822,9 +3885,12 @@ window.confirmarImportExcel = async () => {
   toast('Importando alumnado...');
   try{
     // Build a map of existing students by nombre+grupo to update instead of duplicate
+    // Aislamiento por año: el alumnado se empareja por nombre+grupo+curso
+    // escolar, para que cada año tenga su propio censo y reimportar un
+    // curso nuevo no absorba al alumnado de cursos anteriores.
     const existingByNombreGrupo = {};
     cachedStudents.forEach(s => {
-      const key = (s.nombre||'').toLowerCase() + '||' + (s.grupo||'');
+      const key = (s.nombre||'').toLowerCase() + '||' + (s.grupo||'') + '||' + (studentCursoEscolar(s) || '');
       existingByNombreGrupo[key] = s.id;
     });
     let imported = 0, updated = 0;
@@ -3833,7 +3899,7 @@ window.confirmarImportExcel = async () => {
     for(const p of preview){
       const grupo = normalizeGrupo(renames[p.sname] || p.sname);
       for(const nombre of p.alumnos){
-        const key = nombre.toLowerCase() + '||' + grupo;
+        const key = nombre.toLowerCase() + '||' + grupo + '||' + (studentCursoEscolar({curso}) || '');
         if(existingByNombreGrupo[key]){
           // Update existing
           updates[`${DB_ROOT}/students/${existingByNombreGrupo[key]}`] = {
@@ -4545,12 +4611,7 @@ function renderCursos(c){
                 <td>${esActivo ? '<span class="parte-tag tag-cerrado">Activo</span>' : '<span class="text-muted">—</span>'}</td>
                 <td>
                   <button class="btn btn-sm btn-secondary" onclick="editarCursoModal('${cur.id}')">Editar</button>
-                  ${esInicial
-                    ? '<button class="btn btn-sm btn-ghost" disabled title="El curso inicial no se puede eliminar" style="opacity:.4">Eliminar</button>'
-                    : (esActivo
-                      ? '<button class="btn btn-sm btn-ghost" disabled title="No se puede eliminar el curso activo" style="opacity:.4">Eliminar</button>'
-                      : `<button class="btn btn-sm btn-ghost" style="color:var(--c-danger)" onclick="eliminarCurso('${cur.id}','${escapeHtml(cur.label)}')" title="Eliminar">Eliminar</button>`)
-                  }
+                  <button class="btn btn-sm btn-ghost" disabled title="🔒 Ningún curso escolar se puede eliminar: los datos de cada año se conservan como histórico" style="opacity:.4">Eliminar</button>
                 </td>
               </tr>`;
             }).join('')}
@@ -4562,8 +4623,9 @@ function renderCursos(c){
     <div class="card" style="background:#f7f9fc;font-size:13px;color:var(--c-text-muted);line-height:1.5">
       <strong style="color:var(--c-text-soft)">ℹ️ Información</strong><br>
       • Un curso escolar va del <strong>1 de septiembre</strong> de un año al <strong>31 de agosto</strong> del año siguiente.<br>
-      • El curso <strong>${CURSO_INICIAL}</strong> es el curso inicial y no se puede eliminar.<br>
-      • Tampoco se puede eliminar el curso que esté activo en cada momento.<br>
+      • 🔒 <strong>Ningún curso se puede eliminar</strong> (ni el vigente ni los vencidos): los datos de cada año se conservan como histórico.<br>
+      • 🔒 Solo los datos del <strong>curso activo</strong> se pueden consultar; los cursos anteriores quedan archivados.<br>
+      • Un curso con partes registrados ya no puede cambiar de año (para no romper el histórico).<br>
       • Al cambiar el curso activo, todos los usuarios lo verán reflejado inmediatamente en sus dispositivos.<br>
       • Los partes nuevos se asociarán al curso activo en el momento de su creación.
     </div>
@@ -4644,7 +4706,7 @@ window.editarCursoModal = (cursoId) => {
   const anioActual = parseInt(cur.label.split('-')[0]);
   const esInicial = (cur.label === CURSO_INICIAL || cur.esInicial);
   const body = `
-    ${esInicial ? '<div class="form-hint text-warning" style="margin-bottom:10px">⚠️ Este es el curso inicial. Puedes editarlo pero no eliminarlo.</div>' : ''}
+    ${esInicial ? '<div class="form-hint text-warning" style="margin-bottom:10px">⚠️ Este es el curso inicial: no se puede eliminar ni cambiar su año.</div>' : ''}
     <p style="margin-bottom:12px;font-size:13px;color:var(--c-text-soft)">Modifica el <strong>año de inicio</strong> del curso. Las fechas se ajustarán automáticamente al 1 de septiembre y 31 de agosto.</p>
     <div class="form-group">
       <label>Año de inicio <span class="required">*</span></label>
@@ -4686,6 +4748,20 @@ window.editarCurso = async (cursoId) => {
     toast('Ya existe otro curso con esa etiqueta','error');
     return;
   }
+  // Aislamiento por año: no se puede cambiar el año de un curso que ya
+  // tiene datos (sus partes quedarían huérfanos de su curso) ni del
+  // curso inicial. Los cursos vacíos recién creados sí se pueden corregir.
+  if(label !== cur.label){
+    const nPartes = cachedPartes.filter(p => parteCursoEscolar(p) === cur.label).length;
+    if(nPartes > 0){
+      toast(`No se puede editar el curso ${cur.label}: tiene ${nPartes} parte(s) asociados y el histórico debe conservarse intacto.`,'error');
+      return;
+    }
+    if(cur.label === CURSO_INICIAL || cur.esInicial){
+      toast('El curso inicial no se puede editar: es el curso de partida del centro.','error');
+      return;
+    }
+  }
   const fechas = cursoFechas(label);
   try{
     // Si el curso era el activo y cambia el label, actualizar también el curso activo
@@ -4705,22 +4781,10 @@ window.editarCurso = async (cursoId) => {
   }
 };
 
+/* Aislamiento por año: los cursos escolares (vigentes o vencidos) no se
+ * pueden eliminar. Cada año conserva sus datos como archivo histórico. */
 window.eliminarCurso = async (cursoId, label) => {
-  if(label === CURSO_INICIAL){
-    toast('El curso inicial no se puede eliminar','error');
-    return;
-  }
-  if(label === cachedCursoActivo){
-    toast('No se puede eliminar el curso activo. Cambia el curso activo a otro antes de eliminar este.','error');
-    return;
-  }
-  if(!confirm(`¿Eliminar el curso ${label}?\n\nEsto no afectará a los partes ya registrados, que conservarán el curso con el que fueron creados.`)) return;
-  try{
-    await remove(ref(db, `${DB_ROOT}/cursos/${cursoId}`));
-    toast(`Curso ${label} eliminado`,'success');
-  }catch(e){
-    toast('Error: ' + e.message,'error');
-  }
+  toast('Los cursos escolares no se pueden eliminar: los datos de cada año se conservan como histórico.','error');
 };
 
 window.cambiarCursoActivo = async () => {
@@ -4730,7 +4794,7 @@ window.cambiarCursoActivo = async () => {
     toast('Ese ya es el curso activo','info');
     return;
   }
-  if(!confirm(`¿Cambiar el curso activo a ${nuevoCurso}?\n\nLos nuevos partes se asociarán a este curso. Los partes existentes conservarán su curso original.`)) return;
+  if(!confirm(`¿Cambiar el curso activo a ${nuevoCurso}?\n\nLos nuevos partes se asociarán a este curso. Los partes existentes conservarán su curso original: los de otros cursos quedarán archivados (solo se consulta el curso activo) y volverán a ser visibles si algún día vuelves a activar su curso.`)) return;
   try{
     await set(ref(db, `${DB_ROOT}/config/cursoActivo`), nuevoCurso);
     toast(`Curso activo cambiado a ${nuevoCurso}`,'success');
@@ -4770,9 +4834,8 @@ window.updateCursoIndicator = () => {
  */
 /* ===== Filtros de la vista de informes =====
  * La vista de informes dispone de dos filtros comunes a los tres roles:
- * - Curso escolar: permite consultar los partes de cualquier curso (por
- *   defecto, el curso activo). Imprescindible cuando los partes quedan
- *   archivados en un curso distinto del activo.
+ * - Curso escolar: FIJADO al curso activo (aislamiento por año: los
+ *   cursos vencidos están archivados y no se pueden consultar).
  * - Período: todo el curso, o un tramo fijo (hoy, semana, quincena, mes,
  *   trimestre) o personalizado por el usuario (desde/hasta).
  * El estado vive en informesFiltro y se aplica a TODOS los informes y PDF. */
@@ -4791,8 +4854,9 @@ const INFORMES_PERIODOS = {
   custom: 'Personalizado (elegir fechas)…'
 };
 
-/* Curso sobre el que se está informando ahora mismo */
-const informesCursoSel = () => informesFiltro.curso || cursoActivoActual();
+/* Curso sobre el que se está informando ahora mismo: con el aislamiento
+ * por año, únicamente el curso activo (vigente) es consultable. */
+const informesCursoSel = () => cursoActivoActual();
 
 /* Trimestres escolares (aprox. Andalucía): T1 = 1 sep - 30 nov,
  * T2 = 1 dic - 28/29 feb, T3 = 1 mar - 30 jun. offset 0 = actual, -1 = anterior. */
@@ -4868,24 +4932,24 @@ function cursosConPartes(list){
   return Object.entries(counts).sort((a,b) => b[0].localeCompare(a[0]));
 }
 
-/* Panel de filtros común a los informes de los tres roles */
+/* Panel de filtros común a los informes de los tres roles.
+ * Aislamiento por año: el selector de curso queda FIJADO al curso
+ * activo (vigente); los cursos anteriores están archivados y no se
+ * pueden consultar. */
 function informesFiltrosHTML(scopeList){
   const activo = cursoActivoActual();
-  const sel = informesCursoSel();
-  const conPartes = cursosConPartes(scopeList);
-  const labels = new Set([activo]);
-  conPartes.forEach(([cc]) => labels.add(cc));
-  if(informesFiltro.curso) labels.add(informesFiltro.curso); // aunque ya no tenga partes
-  const opts = [...labels].sort((a,b) => b.localeCompare(a)).map(cc => {
-    const n = (conPartes.find(([cx]) => cx === cc) || [0,0])[1];
-    return `<option value="${escapeHtml(cc)}"${cc === sel ? ' selected' : ''}>${escapeHtml(cc)} — ${n} parte${n === 1 ? '' : 's'}${cc === activo ? ' · curso activo' : ''}</option>`;
-  }).join('');
+  // Descartar un curso guardado que ya no sea el activo (estado
+  // heredado de una versión anterior de la aplicación)
+  if(informesFiltro.curso && informesFiltro.curso !== activo) informesFiltro.curso = null;
+  const nActivos = scopeList.filter(p => esParteDelCurso(p, activo)).length;
   const perOpts = Object.entries(INFORMES_PERIODOS).map(([k,v]) => `<option value="${k}"${k === informesFiltro.periodo ? ' selected' : ''}>${v}</option>`).join('');
   const r = informesRango();
-  // Pista cuando el curso seleccionado no tiene partes pero otros sí
-  const otros = conPartes.filter(([cc]) => cc !== sel);
-  const pista = (conPartes.length > 0 && otros.length > 0 && !conPartes.find(([cc]) => cc === sel))
-    ? `<div style="margin-top:10px;padding:8px 12px;background:#fdf3d8;border:1px solid #e8c56c;border-radius:8px;font-size:13px">⚠️ No hay partes del curso <strong>${escapeHtml(sel)}</strong>${r ? ' en este período' : ''}. Puedes consultar: ${otros.map(([cc,n]) => `<a href="#" onclick="__verInformesCurso('${escapeHtml(cc)}');return false" style="text-decoration:underline">${escapeHtml(cc)} (${n})</a>`).join(' · ')}</div>`
+  // Pista cuando el curso activo no tiene partes en el ámbito de este
+  // rol pero sí los hay archivados en otros cursos
+  const otros = cursosConPartes(scopeList).filter(([cc]) => cc !== activo);
+  const otrosTotal = otros.reduce((acc, x) => acc + x[1], 0);
+  const pista = (nActivos === 0 && otrosTotal > 0)
+    ? `<div style="margin-top:10px;padding:8px 12px;background:#fdf3d8;border:1px solid #e8c56c;border-radius:8px;font-size:13px">⚠️ No hay partes del curso activo <strong>${escapeHtml(activo)}</strong>${r ? ' en este período' : ''}. Hay <strong>${otrosTotal}</strong> parte(s) en otros cursos (${otros.map(([cc,n]) => `${escapeHtml(cc)}: ${n}`).join(' · ')}), que están archivados y no se pueden consultar.${isRealAdmin() ? ' Si alguno pertenece en realidad a este curso, reasignalo en el diagnóstico de datos de esta misma página.' : ''}</div>`
     : '';
   return `
     <div class="card">
@@ -4893,7 +4957,9 @@ function informesFiltrosHTML(scopeList){
       <div class="flex gap-8 flex-wrap" style="align-items:flex-end">
         <div class="form-group" style="margin-bottom:0;min-width:230px">
           <label style="font-size:12px;color:var(--c-text-muted)">Curso escolar</label>
-          <select id="infCurso" class="form-control">${opts}</select>
+          <select id="infCurso" class="form-control" disabled title="🔒 Solo se pueden consultar los datos del curso activo. Los cursos anteriores están archivados.">
+            <option value="${escapeHtml(activo)}" selected>${escapeHtml(activo)} — ${nActivos} parte${nActivos === 1 ? '' : 's'} · curso activo</option>
+          </select>
         </div>
         <div class="form-group" style="margin-bottom:0;min-width:230px">
           <label style="font-size:12px;color:var(--c-text-muted)">Período</label>
@@ -4912,14 +4978,23 @@ function informesFiltrosHTML(scopeList){
         </div>
         <button class="btn btn-ghost" onclick="resetInformesFiltro()">↺ Quitar filtros</button>
       </div>
-      ${r ? `<div style="font-size:12px;color:var(--c-text-muted);margin-top:8px">Período del informe: <strong>${escapeHtml(informesPeriodoLabel())}</strong> · Curso: <strong>${escapeHtml(sel)}</strong></div>` : ''}
+      <div style="font-size:12px;color:var(--c-text-muted);margin-top:8px">🔒 Datos aislados por año: solo se consulta el curso activo (<strong>${escapeHtml(activo)}</strong>). Período del informe: <strong>${escapeHtml(informesPeriodoLabel())}</strong></div>
       ${pista}
     </div>`;
 }
 
-window.__verInformesCurso = (curso) => { informesFiltro.curso = curso; navigate('informes'); };
+window.__verInformesCurso = (curso) => {
+  // Aislamiento por año: solo el curso activo (vigente) es consultable
+  if(curso !== cursoActivoActual()){
+    toast(`Solo se pueden consultar los datos del curso activo (${cursoActivoActual()}). El curso ${curso} está archivado.`,'error');
+    return;
+  }
+  informesFiltro.curso = null;
+  navigate('informes');
+};
 window.infCursoChange = () => {
-  informesFiltro.curso = $('infCurso').value || null;
+  // El selector de curso queda fijado al curso activo (aislamiento por año)
+  informesFiltro.curso = null;
   renderCurrentView();
 };
 window.infPeriodoChange = () => {
@@ -4969,11 +5044,11 @@ function diagnosticoPartesHTML(){
   return `
     <div class="card" style="border-color:#e8c56c">
       <div class="card-title"><span>🩺 Diagnóstico de datos</span></div>
-      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">Reparto de <strong>todos</strong> los partes de la base de datos por curso escolar, sin filtros. Si no ves unos partes en la aplicación, casi siempre es porque están archivados en un curso distinto del curso activo (${escapeHtml(activo)}).</p>
+      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">Reparto de <strong>todos</strong> los partes de la base de datos por curso escolar, sin filtros. Los datos de cada año están aislados: solo el curso activo (${escapeHtml(activo)}) es consultable y ningún curso se puede eliminar. Si unos partes no se ven, casi siempre es porque están archivados en otro curso: si pertenecen a este curso, reasignalos con el botón de abajo.</p>
       <table style="width:100%;font-size:13px;border-collapse:collapse">
         <thead><tr style="text-align:left;border-bottom:2px solid var(--c-border)"><th style="padding:6px 8px">Curso</th><th style="padding:6px 8px">Partes</th><th style="padding:6px 8px"></th></tr></thead>
         <tbody>
-          ${dist.map(([cc, n]) => `<tr style="border-bottom:1px solid var(--c-border)"><td style="padding:6px 8px"><strong>${escapeHtml(cc)}</strong>${cc === activo ? ' <span style="font-size:11px;color:var(--c-primary)">(activo)</span>' : ''}</td><td style="padding:6px 8px">${n}</td><td style="padding:6px 8px"><button class="btn btn-secondary btn-sm" onclick="__verInformesCurso('${escapeHtml(cc)}')">Ver informes</button></td></tr>`).join('')}
+          ${dist.map(([cc, n]) => `<tr style="border-bottom:1px solid var(--c-border)"><td style="padding:6px 8px"><strong>${escapeHtml(cc)}</strong>${cc === activo ? ' <span style="font-size:11px;color:var(--c-primary)">(activo)</span>' : ''}</td><td style="padding:6px 8px">${n}</td><td style="padding:6px 8px">${cc === activo ? `<button class="btn btn-secondary btn-sm" onclick="__verInformesCurso('${escapeHtml(cc)}')">Ver informes</button>` : '<span style="font-size:12px;color:var(--c-text-muted)">🔒 Archivado — no consultable</span>'}</td></tr>`).join('')}
         </tbody>
       </table>
       ${inconsistentes.length > 0 ? `
@@ -5003,6 +5078,7 @@ window.repararCursosPartes = () => {
   window.__fixesCursos = fixes;
   openModal('Reparar curso de los partes',
     `<p>Se va a actualizar el campo <strong>cursoEscolar</strong> de <strong>${fixes.length}</strong> parte(s) para que coincida con el curso escolar de su fecha de incidente.</p>
+     <p style="font-size:12px;color:var(--c-text-muted)">Los partes cuya fecha pertenezca al curso activo (${escapeHtml(cursoActivoActual())}) se volverán visibles; los de cursos anteriores quedarán correctamente archivados en su año (no consultables, pero conservados).</p>
      <p style="font-size:12px;color:var(--c-text-muted);max-height:180px;overflow:auto">${fixes.map(([id, cc]) => `${escapeHtml(id)} → <strong>${escapeHtml(cc)}</strong>`).join('<br>')}</p>`,
     `<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button> <button class="btn btn-primary" onclick="confirmarRepararCursos()">Sí, reparar</button>`);
 };
@@ -5151,7 +5227,7 @@ function renderInformesProfesor(c, cursoActivo){
 
     <div class="card">
       <div class="card-title"><span>👥 Por alumno</span></div>
-      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${partesCurso.length === 0 ? 'No hay partes que coincidan con los filtros seleccionados: prueba a cambiar el curso o el período de arriba.' : 'Selecciona un alumno para ver el detalle de sus partes y exportarlo a PDF.'}</p>
+      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${partesCurso.length === 0 ? 'No hay partes que coincidan con los filtros seleccionados: prueba a cambiar el período de arriba.' : 'Selecciona un alumno para ver el detalle de sus partes y exportarlo a PDF.'}</p>
       <select id="infProfAlumno" class="form-control" style="max-width:400px;margin-bottom:10px">
         <option value="">${alumnosUnicos.length ? '— Selecciona alumno —' : '— Sin resultados —'}</option>
         ${alumnosUnicos.map(a => {
@@ -5488,7 +5564,7 @@ function renderInformesTutor(c, cursoActivo){
 
     <div class="card">
       <div class="card-title"><span>👤 Informe por alumno (orden cronológico inverso)</span></div>
-      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${partesTutoria.length === 0 ? 'No hay partes que coincidan con los filtros seleccionados: prueba a cambiar el curso o el período de arriba.' : 'Selecciona un alumno para ver todos sus partes y exportarlos a PDF.'}</p>
+      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${partesTutoria.length === 0 ? 'No hay partes que coincidan con los filtros seleccionados: prueba a cambiar el período de arriba.' : 'Selecciona un alumno para ver todos sus partes y exportarlos a PDF.'}</p>
       <select id="infTutorAlumno" class="form-control" style="max-width:400px;margin-bottom:10px">
         <option value="">${alumnosUnicos.length ? '— Selecciona alumno —' : '— Sin resultados —'}</option>
         ${alumnosUnicos.map(a => {
@@ -5634,7 +5710,7 @@ function renderInformesAdmin(c, cursoActivo){
 
     <div class="card">
       <div class="card-title"><span>👤 Informe por alumno</span></div>
-      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${sinResultados ? 'No hay partes que coincidan con los filtros seleccionados: prueba a cambiar el curso o el período de arriba.' : 'Los partes del alumno se muestran en orden cronológico inverso.'}</p>
+      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${sinResultados ? 'No hay partes que coincidan con los filtros seleccionados: prueba a cambiar el período de arriba.' : 'Los partes del alumno se muestran en orden cronológico inverso.'}</p>
       <select id="infAdminAlumno" class="form-control" style="max-width:400px;margin-bottom:10px">
         <option value="">${alumnosUnicos.length ? '— Selecciona alumno —' : '— Sin resultados —'}</option>
         ${alumnosUnicos.map(a => {
