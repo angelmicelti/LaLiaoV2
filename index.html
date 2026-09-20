@@ -1186,6 +1186,8 @@ onAuthStateChanged(auth, async (user) => {
     // Limpiar TODA la caché para que no queden datos obsoletos de la sesión anterior
     currentUser = null; currentUserUid = null; selectedRole = null; manualLoginAttempted = false;
     currentView = 'dashboard';
+    // Reiniciar los filtros de informes: no deben filtrar la sesión siguiente
+    informesFiltro = { curso: null, periodo: 'curso', desde: null, hasta: null, q: '', tipo: '', grupo: '', estado: '' };
     cachedStudents = []; cachedUsers = {}; cachedPartes = []; cachedNotifications = [];
     cachedUbicaciones = []; cachedCursos = []; cachedCursoActivo = null;
     npFormDraft = null; previousViewBeforeConfig = null;
@@ -1546,7 +1548,7 @@ function startListeners(){
     });
     if(profCompletados > 0){
       lastPartesSig = null;
-      if(currentView === 'informes' || currentView === 'todosPartes') renderCurrentView();
+      if(currentView === 'informes') renderCurrentView();
     } else if(['usuarios','dashboard'].includes(currentView)) renderCurrentView();
   });
   unsubscribers.push(unsubUsers);
@@ -1644,7 +1646,7 @@ function listenPartes(){
     cachedPartes = arr;
     if(sig !== lastPartesSig){
       lastPartesSig = sig;
-      if(['dashboard','misPartes','partesTutoria','todosPartes','alumnoDetail','informes'].includes(currentView)) renderCurrentView();
+      if(['dashboard','misPartes','partesTutoria','alumnoDetail','informes'].includes(currentView)) renderCurrentView();
     }
   });
   unsubscribers.push(unsub);
@@ -1847,7 +1849,6 @@ const NAV_ITEMS = [
   { id:'nuevoParte', label:'Nuevo parte', icon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>', roles:['profesor'] },
   { id:'misPartes', label:'Mis partes', icon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>', roles:['profesor','tutor'] },
   { id:'partesTutoria', label:'Tutoría', icon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>', roles:['tutor','admin'] },
-  { id:'todosPartes', label:'Todos', icon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>', roles:['admin'] },
   { id:'alumnado', label:'Alumnado', icon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>', roles:['admin','tutor'] },
   { id:'usuarios', label:'Usuarios', icon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>', roles:['admin'] },
   { id:'configuracion', label:'Configuración', icon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>', roles:['admin'] },
@@ -1972,6 +1973,9 @@ window.navigate = (view) => {
     toast('No tienes permiso para acceder a esta sección', 'error');
     return;
   }
+  // La antigua sección "Todos" se ha fusionado con "Informes":
+  // redirigir cualquier enlace o hash antiguo (#todosPartes).
+  if(view === 'todosPartes') view = 'informes';
   // Si estamos en "Nuevo parte" y vamos a Configuración, guardar borrador del formulario
   if(currentView === 'nuevoParte' && view === 'configuracion'){
     saveNpDraft();
@@ -2068,10 +2072,7 @@ function renderCurrentView(){
   // y da la impresión de que "no se puede seleccionar nada".
   let snap = null;
   if(currentView === 'informes'){
-    snap = {};
-    c.querySelectorAll('select[id]').forEach(el => {
-      if(el.value && el.id !== 'infCurso' && el.id !== 'infPeriodo') snap[el.id] = el.value;
-    });
+    snap = snapshotInformesSelects(c);
   }
   c.innerHTML = '';
   switch(currentView){
@@ -2079,7 +2080,6 @@ function renderCurrentView(){
     case 'nuevoParte': renderNuevoParte(c); break;
     case 'misPartes': renderMisPartes(c); break;
     case 'partesTutoria': renderPartesTutoria(c); break;
-    case 'todosPartes': renderTodosPartes(c); break;
     case 'alumnado': renderAlumnado(c); break;
     case 'usuarios': renderUsuarios(c); break;
     case 'configuracion': renderConfiguracion(c); break;
@@ -2092,13 +2092,7 @@ function renderCurrentView(){
   // Restaurar las selecciones capturadas antes del repintado y regenerar
   // sus resultados (el evento change reconstruye el panel de detalle).
   if(snap){
-    Object.keys(snap).forEach(id => {
-      const el = $(id);
-      if(el && el.tagName === 'SELECT' && [...el.options].some(o => o.value === snap[id])){
-        el.value = snap[id];
-        el.dispatchEvent(new Event('change'));
-      }
-    });
+    restoreInformesSelects(snap);
   }
 }
 /* Expose render functions for testing/debugging */
@@ -2220,7 +2214,7 @@ function renderDashboard(c){
     <div class="card">
       <div class="card-title">
         Partes recientes
-        <button class="btn btn-sm btn-ghost" onclick="navigate('${isRealAdmin() ? 'todosPartes' : 'misPartes'}')">Ver todos →</button>
+        <button class="btn btn-sm btn-ghost" onclick="navigate('${isRealAdmin() ? 'informes' : 'misPartes'}')">Ver todos →</button>
       </div>
       <div id="recentPartes"></div>
     </div>
@@ -2946,120 +2940,13 @@ window.filterTut = () => {
   }
 };
 
-/* ===== Todos los Partes (admin) ===== */
-function renderTodosPartes(c){
-  c.innerHTML = `
-    <div class="page-title">Todos los partes</div>
-    <div class="page-subtitle">${cachedPartes.filter(p => esParteDelCurso(p, cursoActivoActual())).length} partes en el centro · Curso ${escapeHtml(cursoActivoActual())}</div>
-    <div class="toolbar">
-      <div class="search">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="text" id="searchAll" placeholder="Buscar alumno, profesor, conducta..." oninput="filterAll()">
-      </div>
-      <select id="filterTipoAll" onchange="filterAll()">
-        <option value="">Todos los tipos</option>
-        <option value="CCNC">CCNC</option>
-        <option value="CGPC">CGPC</option>
-      </select>
-      <select id="filterGrupoAll" onchange="filterAll()">
-        <option value="">Todos los grupos</option>
-        ${[...new Set(cachedStudents.map(s=>s.grupo).filter(Boolean))].sort().map(g=>`<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('')}
-      </select>
-      <select id="filterEstadoAll" onchange="filterAll()">
-        <option value="">Todos los estados</option>
-        <option value="abierto">Abiertos</option>
-        <option value="cerrado">Cerrados</option>
-      </select>
-      <button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="generarPDFTodosPartes()" title="Genera un informe A4 en PDF con los partes que se muestran ahora mismo en pantalla (respeta la búsqueda y los filtros aplicados)">⬇️ Descargar PDF</button>
-    </div>
-    <div id="allPartesList"></div>
-  `;
-  filterAll();
-}
-/* Filtros de la barra de "Todos los partes": devuelve la lista que se
- * muestra en pantalla. La usa también la exportación a PDF, para que el
- * informe contenga exactamente lo que se ve en ese momento. */
-function todosPartesFiltrados(){
-  const q = ($('searchAll')?.value||'').toLowerCase();
-  const t = $('filterTipoAll')?.value||'';
-  const g = $('filterGrupoAll')?.value||'';
-  const e = $('filterEstadoAll')?.value||'';
-  let list = cachedPartes.filter(p => esParteDelCurso(p, cursoActivoActual()));
-  if(q) list = list.filter(p => (p.alumnoNombre||'').toLowerCase().includes(q) || (p.profesorNombre||'').toLowerCase().includes(q) || (p.conductaId||'').toLowerCase().includes(q) || (p.conductaTexto||'').toLowerCase().includes(q));
-  if(t) list = list.filter(p => p.tipo === t);
-  if(g) list = list.filter(p => p.grupo === g);
-  if(e) list = list.filter(p => p.estado === e);
-  return list;
-}
-
-window.filterAll = () => {
-  const list = todosPartesFiltrados();
-  const el = $('allPartesList');
-  if(list.length === 0){
-    el.innerHTML = `<div class="empty-state"><p>No hay partes que coincidan con el filtro.</p></div>`;
-  } else {
-    el.innerHTML = list.map(p => renderParteCard(p)).join('');
-  }
-};
-
-/* "⬇️ Descargar PDF" de la pantalla Todos los partes: genera un informe
- * A4 con el contenido que se muestra en ese momento en la pantalla
- * (respeta la búsqueda y los filtros de tipo/grupo/estado activos). */
-window.generarPDFTodosPartes = () => {
-  const cursoActivo = cursoActivoActual();
-  const list = todosPartesFiltrados()
-    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
-  if(list.length === 0){ toast('No hay partes que coincidan con el filtro: no se puede exportar un informe vacío.','error'); return; }
-
-  // Resumen de los filtros aplicados (para la cabecera y el nombre del archivo)
-  const q = ($('searchAll')?.value||'').trim();
-  const t = $('filterTipoAll')?.value||'';
-  const g = $('filterGrupoAll')?.value||'';
-  const e = $('filterEstadoAll')?.value||'';
-  const filtros = [];
-  if(q) filtros.push(`Búsqueda: "${q}"`);
-  if(t) filtros.push(`Tipo: ${t}`);
-  if(g) filtros.push(`Grupo: ${g}`);
-  if(e) filtros.push(`Estado: ${e === 'cerrado' ? 'Cerrados' : 'Abiertos'}`);
-  const filtrosTexto = filtros.length ? filtros.join(' · ') : 'Ninguno (todos los partes del curso)';
-
-  const grupos = [...new Set(list.map(p => p.grupo).filter(Boolean))];
-  const alumnos = [...new Set(list.map(p => p.alumnoNombre).filter(Boolean))];
-  const profesores = [...new Set(list.map(p => p.profesorNombre).filter(Boolean))];
-
-  $('printContainer').innerHTML = `
-    ${printHeader('Todos los partes', `${list.length} parte${list.length===1?'':'s'} en el centro`, `Curso ${cursoActivo} · Filtros: ${filtrosTexto} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
-    <div class="print-section">
-      <h3>Resumen del listado</h3>
-      <div class="stat-grid">
-        ${printStatBox(list.length, 'Total partes')}
-        ${printStatBox(list.filter(p=>p.estado!=='cerrado').length, 'Abiertos')}
-        ${printStatBox(list.filter(p=>p.estado==='cerrado').length, 'Cerrados')}
-        ${printStatBox(list.filter(p=>p.tipo==='CCNC').length, 'CCNC')}
-        ${printStatBox(list.filter(p=>p.tipo==='CGPC').length, 'CGPC')}
-        ${printStatBox(grupos.length, 'Grupos')}
-        ${printStatBox(alumnos.length, 'Alumnos')}
-        ${printStatBox(profesores.length, 'Profesores')}
-      </div>
-    </div>
-    <div class="print-section">
-      <h3>Filtros aplicados</h3>
-      <div style="font-size:12px;color:#52606d">${escapeHtml(filtrosTexto)}</div>
-    </div>
-    <div class="print-section">
-      <h3>Listado de partes (orden cronológico inverso)</h3>
-      ${list.map(p => printParteItem(p)).join('')}
-    </div>
-  `;
-
-  // Nombre de archivo con información del contenido: curso + filtros activos
-  let filename = `Todos_los_partes_${cursoActivo}`;
-  if(q) filename += `_busqueda-${sanitizeFilename(q)}`;
-  if(t) filename += `_${t}`;
-  if(g) filename += `_grupo-${sanitizeFilename(g)}`;
-  if(e) filename += `_${e === 'cerrado' ? 'cerrados' : 'abiertos'}`;
-  imprimirInforme(filename);
-};
+/* ===== Todos los Partes (admin) =====
+ * SECCIÓN ELIMINADA: fusionada con "Informes". La antigua pantalla
+ * "Todos los partes" (búsqueda + filtros de tipo/grupo/estado, listado
+ * completo y su exportación a PDF) vive ahora dentro de la sección
+ * única "Informes": el panel de filtros incluye esos filtros, y el
+ * listado con su botón de descarga es la tarjeta "📋 Todos los
+ * partes". Ver generarPDFTodosPartes() en la sección de informes. */
 
 /* ===== Detalle del Parte ===== */
 window.openParteDetail = (parteId) => {
@@ -4901,13 +4788,19 @@ window.updateCursoIndicator = () => {
  * Todos pueden exportar a PDF (mediante window.print, que en móvil y PC permite "Guardar como PDF")
  */
 /* ===== Filtros de la vista de informes =====
- * La vista de informes dispone de dos filtros comunes a los tres roles:
+ * La vista de informes (única: las antiguas secciones "Todos" e
+ * "Informes" están fusionadas) dispone de filtros comunes a los tres
+ * roles:
  * - Curso escolar: FIJADO al curso activo (aislamiento por año: los
  *   cursos vencidos están archivados y no se pueden consultar).
  * - Período: todo el curso, o un tramo fijo (hoy, semana, quincena, mes,
  *   trimestre) o personalizado por el usuario (desde/hasta).
- * El estado vive en informesFiltro y se aplica a TODOS los informes y PDF. */
-let informesFiltro = { curso: null, periodo: 'curso', desde: null, hasta: null };
+ * - Búsqueda libre (alumno, profesor o conducta) y filtros rápidos de
+ *   tipo (CCNC/CGPC), grupo y estado (abiertos/cerrados), heredados de
+ *   la antigua sección "Todos los partes".
+ * El estado vive en informesFiltro y se aplica a TODOS los elementos de
+ * la sección (estadísticas, listado, desplegables y PDF). */
+let informesFiltro = { curso: null, periodo: 'curso', desde: null, hasta: null, q: '', tipo: '', grupo: '', estado: '' };
 
 const INFORMES_PERIODOS = {
   curso: 'Todo el curso',
@@ -4994,8 +4887,10 @@ const informesPeriodoFilename = () => {
   return nombres[informesFiltro.periodo] || 'periodo';
 };
 
-/* Aplica los filtros de la vista (curso + período) a una lista de partes ya
- * acotada al ámbito del rol (profesor/tutor/admin). */
+/* Aplica TODOS los filtros de la vista (curso + período + búsqueda +
+ * tipo + grupo + estado) a una lista de partes ya acotada al ámbito del
+ * rol (profesor/tutor/admin). Así, pantalla, estadísticas, desplegables
+ * y PDF muestran siempre exactamente lo mismo. */
 function filtrarPartesInforme(list){
   const curso = informesCursoSel();
   let out = list.filter(p => esParteDelCurso(p, curso));
@@ -5003,6 +4898,11 @@ function filtrarPartesInforme(list){
   if(r){
     out = out.filter(p => { const t = fechaIncidenteTs(p); return t !== null && t >= r.desde && t <= r.hasta; });
   }
+  const q = (informesFiltro.q||'').toLowerCase();
+  if(q) out = out.filter(p => (p.alumnoNombre||'').toLowerCase().includes(q) || (p.profesorNombre||'').toLowerCase().includes(q) || (p.conductaId||'').toLowerCase().includes(q) || (p.conductaTexto||'').toLowerCase().includes(q));
+  if(informesFiltro.tipo) out = out.filter(p => p.tipo === informesFiltro.tipo);
+  if(informesFiltro.grupo) out = out.filter(p => p.grupo === informesFiltro.grupo);
+  if(informesFiltro.estado) out = out.filter(p => p.estado === informesFiltro.estado);
   return out;
 }
 
@@ -5013,36 +4913,42 @@ function cursosConPartes(list){
   return Object.entries(counts).sort((a,b) => b[0].localeCompare(a[0]));
 }
 
-/* Panel de filtros común a los informes de los tres roles.
- * Aislamiento por año: el selector de curso queda FIJADO al curso
- * activo (vigente); los cursos anteriores están archivados y no se
- * pueden consultar. */
-function informesFiltrosHTML(scopeList){
+/* Panel de filtros común a los informes de los tres roles: reúne en un
+ * único panel lo que antes estaba repartido entre las secciones
+ * "Informes" (curso + período) y "Todos" (búsqueda + tipo + grupo +
+ * estado). Aislamiento por año: el selector de curso queda FIJADO al
+ * curso activo (vigente); los cursos anteriores están archivados y no
+ * se pueden consultar. En el perfil de tutor no se muestra el filtro
+ * de grupo (todo su ámbito es un único grupo). */
+function informesFiltrosHTML(scopeList, mostrarGrupoFiltro){
   const activo = cursoActivoActual();
   // Descartar un curso guardado que ya no sea el activo (estado
   // heredado de una versión anterior de la aplicación)
   if(informesFiltro.curso && informesFiltro.curso !== activo) informesFiltro.curso = null;
   const nActivos = scopeList.filter(p => esParteDelCurso(p, activo)).length;
   const perOpts = Object.entries(INFORMES_PERIODOS).map(([k,v]) => `<option value="${k}"${k === informesFiltro.periodo ? ' selected' : ''}>${v}</option>`).join('');
-  const r = informesRango();
+  // Grupos con partes del curso activo dentro del período elegido
+  // (opciones del filtro de grupo; se recalculan al cambiar el período)
+  const gruposAmbito = gruposDelAmbito(scopeList);
+  if(informesFiltro.grupo && !gruposAmbito.includes(informesFiltro.grupo)) informesFiltro.grupo = '';
   // Pista cuando el curso activo no tiene partes en el ámbito de este
   // rol pero sí los hay archivados en otros cursos
   const otros = cursosConPartes(scopeList).filter(([cc]) => cc !== activo);
   const otrosTotal = otros.reduce((acc, x) => acc + x[1], 0);
   const pista = (nActivos === 0 && otrosTotal > 0)
-    ? `<div style="margin-top:10px;padding:8px 12px;background:#fdf3d8;border:1px solid #e8c56c;border-radius:8px;font-size:13px">⚠️ No hay partes del curso activo <strong>${escapeHtml(activo)}</strong>${r ? ' en este período' : ''}. Hay <strong>${otrosTotal}</strong> parte(s) en otros cursos (${otros.map(([cc,n]) => `${escapeHtml(cc)}: ${n}`).join(' · ')}), que están archivados y no se pueden consultar.${isRealAdmin() ? ' Si alguno pertenece en realidad a este curso, reasignalo en el diagnóstico de datos de esta misma página.' : ''}</div>`
+    ? `<div style="margin-top:10px;padding:8px 12px;background:#fdf3d8;border:1px solid #e8c56c;border-radius:8px;font-size:13px">⚠️ No hay partes del curso activo <strong>${escapeHtml(activo)}</strong> en el ámbito de este perfil. Hay <strong>${otrosTotal}</strong> parte(s) en otros cursos (${otros.map(([cc,n]) => `${escapeHtml(cc)}: ${n}`).join(' · ')}), que están archivados y no se pueden consultar.${isRealAdmin() ? ' Si alguno pertenece en realidad a este curso, reasignalo en el diagnóstico de datos de esta misma página.' : ''}</div>`
     : '';
   return `
     <div class="card">
       <div class="card-title"><span>🗓️ Filtros del informe</span></div>
       <div class="flex gap-8 flex-wrap" style="align-items:flex-end">
-        <div class="form-group" style="margin-bottom:0;min-width:230px">
+        <div class="form-group" style="margin-bottom:0;min-width:220px">
           <label style="font-size:12px;color:var(--c-text-muted)">Curso escolar</label>
           <select id="infCurso" class="form-control" disabled title="🔒 Solo se pueden consultar los datos del curso activo. Los cursos anteriores están archivados.">
             <option value="${escapeHtml(activo)}" selected>${escapeHtml(activo)} — ${nActivos} parte${nActivos === 1 ? '' : 's'} · curso activo</option>
           </select>
         </div>
-        <div class="form-group" style="margin-bottom:0;min-width:230px">
+        <div class="form-group" style="margin-bottom:0;min-width:200px">
           <label style="font-size:12px;color:var(--c-text-muted)">Período</label>
           <select id="infPeriodo" class="form-control">${perOpts}</select>
         </div>
@@ -5057,9 +4963,37 @@ function informesFiltrosHTML(scopeList){
           </div>
           <button class="btn btn-secondary" onclick="aplicarRangoCustom()">Aplicar</button>
         </div>
+        <div class="form-group" style="margin-bottom:0;flex:1;min-width:190px">
+          <label style="font-size:12px;color:var(--c-text-muted)">Búsqueda</label>
+          <input type="text" id="infBuscar" class="form-control" placeholder="Alumno, profesor, conducta..." value="${escapeHtml(informesFiltro.q || '')}" oninput="infBuscarChange()">
+        </div>
+        <div class="form-group" style="margin-bottom:0;min-width:130px">
+          <label style="font-size:12px;color:var(--c-text-muted)">Tipo</label>
+          <select id="infTipo" class="form-control">
+            <option value="">Todos</option>
+            <option value="CCNC"${informesFiltro.tipo === 'CCNC' ? ' selected' : ''}>CCNC</option>
+            <option value="CGPC"${informesFiltro.tipo === 'CGPC' ? ' selected' : ''}>CGPC</option>
+          </select>
+        </div>
+        ${mostrarGrupoFiltro === false ? '' : `
+        <div class="form-group" style="margin-bottom:0;min-width:150px">
+          <label style="font-size:12px;color:var(--c-text-muted)">Grupo</label>
+          <select id="infGrupo" class="form-control">
+            <option value="">Todos los grupos</option>
+            ${gruposAmbito.map(g => `<option value="${escapeHtml(g)}"${informesFiltro.grupo === g ? ' selected' : ''}>${escapeHtml(g)}</option>`).join('')}
+          </select>
+        </div>`}
+        <div class="form-group" style="margin-bottom:0;min-width:130px">
+          <label style="font-size:12px;color:var(--c-text-muted)">Estado</label>
+          <select id="infEstado" class="form-control">
+            <option value="">Todos</option>
+            <option value="abierto"${informesFiltro.estado === 'abierto' ? ' selected' : ''}>Abiertos</option>
+            <option value="cerrado"${informesFiltro.estado === 'cerrado' ? ' selected' : ''}>Cerrados</option>
+          </select>
+        </div>
         <button class="btn btn-ghost" onclick="resetInformesFiltro()">↺ Quitar filtros</button>
       </div>
-      <div style="font-size:12px;color:var(--c-text-muted);margin-top:8px">🔒 Datos aislados por año: solo se consulta el curso activo (<strong>${escapeHtml(activo)}</strong>). Período del informe: <strong>${escapeHtml(informesPeriodoLabel())}</strong></div>
+      <div id="infEstadoFiltros" style="font-size:12px;color:var(--c-text-muted);margin-top:8px">🔒 Datos aislados por año: solo se consulta el curso activo (<strong>${escapeHtml(activo)}</strong>). Filtros activos: <strong>${escapeHtml(informesFiltrosActivosTexto())}</strong></div>
       ${pista}
     </div>`;
 }
@@ -5082,7 +5016,8 @@ window.infPeriodoChange = () => {
   informesFiltro.periodo = $('infPeriodo').value;
   if(informesFiltro.periodo !== 'custom'){
     informesFiltro.desde = null; informesFiltro.hasta = null;
-    renderCurrentView();
+    refrescarGrupoOpciones();
+    refrescarInformesResultados();
   } else {
     const rc = $('infRangoCustom'); if(rc) rc.style.display = 'flex';
     const d = $('infDesde'); if(d) d.focus();
@@ -5094,16 +5029,141 @@ window.aplicarRangoCustom = () => {
   if(!d || !h){ toast('Indica las dos fechas (desde y hasta)','error'); return; }
   if(d > h){ toast('La fecha "Desde" no puede ser posterior a "Hasta"','error'); return; }
   informesFiltro.desde = d; informesFiltro.hasta = h;
-  renderCurrentView();
+  refrescarGrupoOpciones();
+  refrescarInformesResultados();
 };
 window.resetInformesFiltro = () => {
-  informesFiltro = { curso: null, periodo: 'curso', desde: null, hasta: null };
-  renderCurrentView();
+  informesFiltro = { curso: null, periodo: 'curso', desde: null, hasta: null, q: '', tipo: '', grupo: '', estado: '' };
+  // El panel no se repinta: devolver sus controles al estado inicial
+  const valores = { infBuscar:'', infTipo:'', infGrupo:'', infEstado:'', infPeriodo:'curso', infDesde:'', infHasta:'' };
+  Object.entries(valores).forEach(([id, v]) => { const el = $(id); if(el) el.value = v; });
+  const rc = $('infRangoCustom'); if(rc) rc.style.display = 'none';
+  refrescarGrupoOpciones();
+  refrescarInformesResultados();
+};
+/* Filtros rápidos heredados de la antigua sección "Todos los partes":
+ * se guardan en informesFiltro y refrescan solo la zona de resultados
+ * (el panel NO se repinta, así el campo de búsqueda no pierde el foco). */
+window.infBuscarChange = () => {
+  informesFiltro.q = $('infBuscar') ? $('infBuscar').value : '';
+  refrescarInformesResultados();
+};
+window.infTipoChange = () => {
+  informesFiltro.tipo = $('infTipo') ? $('infTipo').value : '';
+  refrescarInformesResultados();
+};
+window.infGrupoChange = () => {
+  informesFiltro.grupo = $('infGrupo') ? $('infGrupo').value : '';
+  refrescarInformesResultados();
+};
+window.infEstadoChange = () => {
+  informesFiltro.estado = $('infEstado') ? $('infEstado').value : '';
+  refrescarInformesResultados();
 };
 function setupInformesFiltros(){
   const c1 = $('infCurso'); if(c1) c1.onchange = infCursoChange;
   const c2 = $('infPeriodo'); if(c2) c2.onchange = infPeriodoChange;
+  const c3 = $('infTipo'); if(c3) c3.onchange = infTipoChange;
+  const c4 = $('infGrupo'); if(c4) c4.onchange = infGrupoChange;
+  const c5 = $('infEstado'); if(c5) c5.onchange = infEstadoChange;
 }
+/* Selects del panel de filtros: sus valores viven en informesFiltro y
+ * se restauran solos al repintar la vista, así que nunca deben
+ * incluirse en las instantáneas de selecciones de los informes. */
+const INF_FILTER_SELECT_IDS = ['infCurso','infPeriodo','infTipo','infGrupo','infEstado'];
+/* Instantánea de las selecciones de los desplegables de informes (por
+ * alumno/grupo/profesor...), para preservarlas al repintar la vista o
+ * la zona de resultados. */
+function snapshotInformesSelects(root){
+  const snap = {};
+  if(!root) return snap;
+  root.querySelectorAll('select[id]').forEach(el => {
+    if(el.value && !INF_FILTER_SELECT_IDS.includes(el.id)) snap[el.id] = el.value;
+  });
+  return snap;
+}
+function restoreInformesSelects(snap){
+  Object.keys(snap).forEach(id => {
+    const el = $(id);
+    if(el && el.tagName === 'SELECT' && [...el.options].some(o => o.value === snap[id])){
+      el.value = snap[id];
+      el.dispatchEvent(new Event('change'));
+    }
+  });
+}
+/* Ámbito de partes del perfil actual: los del profesor, los de la
+ * tutoría o todos los del centro (admin). */
+function informesScopeList(){
+  const effRole = getEffectiveRole();
+  if(effRole === 'profesor') return cachedPartes.filter(p => p.profesorId === currentUserUid);
+  if(effRole === 'tutor'){
+    const g = getEffectiveTutoriaGrupo();
+    return g ? cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(g)) : [];
+  }
+  return cachedPartes;
+}
+/* Grupos con partes del curso activo dentro del período seleccionado
+ * (sirven de opciones para el filtro de grupo). */
+function gruposDelAmbito(scopeList){
+  const curso = informesCursoSel();
+  let base = scopeList.filter(p => esParteDelCurso(p, curso));
+  const r = informesRango();
+  if(r){
+    base = base.filter(p => { const t = fechaIncidenteTs(p); return t !== null && t >= r.desde && t <= r.hasta; });
+  }
+  return [...new Set(base.map(p => p.grupo).filter(Boolean))].sort();
+}
+/* Recalcula las opciones del filtro de grupo al cambiar el período
+ * (un grupo sin partes en el período deja de ser seleccionable). */
+function refrescarGrupoOpciones(){
+  const sel = $('infGrupo');
+  if(!sel) return; // el perfil de tutor no tiene filtro de grupo
+  const grupos = gruposDelAmbito(informesScopeList());
+  const actual = informesFiltro.grupo;
+  sel.innerHTML = `<option value="">Todos los grupos</option>` + grupos.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
+  if(actual && grupos.includes(actual)) sel.value = actual;
+  else informesFiltro.grupo = '';
+}
+/* Texto con TODOS los filtros activos, para la línea de estado del
+ * panel y para las cabeceras de los PDF. */
+function informesFiltrosActivosTexto(){
+  const partes = [`Período: ${informesPeriodoLabel()}`];
+  if(informesFiltro.q) partes.push(`Búsqueda: "${informesFiltro.q}"`);
+  if(informesFiltro.tipo) partes.push(`Tipo: ${informesFiltro.tipo}`);
+  if(informesFiltro.grupo) partes.push(`Grupo: ${informesFiltro.grupo}`);
+  if(informesFiltro.estado) partes.push(`Estado: ${informesFiltro.estado === 'cerrado' ? 'Cerrados' : 'Abiertos'}`);
+  return partes.join(' · ');
+}
+/* Sufijo para los nombres de archivo de los PDF exportados: refleja
+ * los filtros rápidos activos (búsqueda/tipo/grupo/estado). */
+function informesFiltrosFilenameSuffix(){
+  let s = '';
+  if(informesFiltro.q) s += `_busqueda-${sanitizeFilename(informesFiltro.q)}`;
+  if(informesFiltro.tipo) s += `_${informesFiltro.tipo}`;
+  if(informesFiltro.grupo) s += `_grupo-${sanitizeFilename(informesFiltro.grupo)}`;
+  if(informesFiltro.estado) s += `_${informesFiltro.estado === 'cerrado' ? 'cerrados' : 'abiertos'}`;
+  return s;
+}
+/* Repinta SOLO la zona de resultados de la vista de informes
+ * (#infResultados) al cambiar cualquier filtro: el panel de filtros
+ * permanece intacto (la búsqueda no pierde el foco) y las selecciones
+ * de los desplegables de informes se conservan. */
+window.refrescarInformesResultados = () => {
+  const el = $('infResultados');
+  if(currentView !== 'informes' || !el) return;
+  const scope = informesScopeList();
+  const snap = snapshotInformesSelects(el);
+  const effRole = getEffectiveRole();
+  if(effRole === 'profesor') el.innerHTML = informesResultadosProfesorHTML(scope);
+  else if(effRole === 'tutor') el.innerHTML = informesResultadosTutorHTML(scope);
+  else el.innerHTML = informesResultadosAdminHTML(scope);
+  if(effRole === 'profesor'){ infProfAlumnoSetup(); infProfGrupoSetup(); }
+  else if(effRole === 'tutor'){ infTutorAlumnoSetup(); }
+  else { infAdminAlumnoSetup(); infAdminGrupoSetup(); infAdminProfesorSetup(); }
+  restoreInformesSelects(snap);
+  const st = $('infEstadoFiltros');
+  if(st) st.innerHTML = `🔒 Datos aislados por año: solo se consulta el curso activo (<strong>${escapeHtml(cursoActivoActual())}</strong>). Filtros activos: <strong>${escapeHtml(informesFiltrosActivosTexto())}</strong>`;
+};
 
 /* === Diagnóstico y reparación (solo admin) ===
  * Muestra cómo están repartidos los partes de la BD por curso escolar y
@@ -5126,12 +5186,14 @@ function diagnosticoPartesHTML(){
     <div class="card" style="border-color:#e8c56c">
       <div class="card-title"><span>🩺 Diagnóstico de datos</span></div>
       <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">Reparto de <strong>todos</strong> los partes de la base de datos por curso escolar, sin filtros. Los datos de cada año están aislados: solo el curso activo (${escapeHtml(activo)}) es consultable y ningún curso se puede eliminar. Si unos partes no se ven, casi siempre es porque están archivados en otro curso: si pertenecen a este curso, reasignalos con el botón de abajo.</p>
+      <div style="overflow-x:auto">
       <table style="width:100%;font-size:13px;border-collapse:collapse">
         <thead><tr style="text-align:left;border-bottom:2px solid var(--c-border)"><th style="padding:6px 8px">Curso</th><th style="padding:6px 8px">Partes</th><th style="padding:6px 8px"></th></tr></thead>
         <tbody>
           ${dist.map(([cc, n]) => `<tr style="border-bottom:1px solid var(--c-border)"><td style="padding:6px 8px"><strong>${escapeHtml(cc)}</strong>${cc === activo ? ' <span style="font-size:11px;color:var(--c-primary)">(activo)</span>' : ''}</td><td style="padding:6px 8px">${n}</td><td style="padding:6px 8px">${cc === activo ? `<button class="btn btn-secondary btn-sm" onclick="__verInformesCurso('${escapeHtml(cc)}')">Ver informes</button>` : '<span style="font-size:12px;color:var(--c-text-muted)">🔒 Archivado — no consultable</span>'}</td></tr>`).join('')}
         </tbody>
       </table>
+      </div>
       ${inconsistentes.length > 0 ? `
       <div style="margin-top:12px;padding:10px 12px;background:#fdf3d8;border:1px solid #e8c56c;border-radius:8px;font-size:13px">
         ⚠️ <strong>${inconsistentes.length}</strong> parte(s) tienen asignado un curso que no corresponde a la fecha del incidente (se guardaron antes de un cambio de curso activo, o se introdujeron a mano en la BD). Esto los hace invisibles en el curso al que pertenecen realmente.
@@ -5286,8 +5348,20 @@ const sanitizeFilename = (text) => {
 
 /* === INFORMES DEL PROFESOR === */
 function renderInformesProfesor(c, cursoActivo){
-  const myPartes = cachedPartes.filter(p => p.profesorId === currentUserUid);
-  // Se aplican los filtros de la vista (curso seleccionado + período)
+  c.innerHTML = `
+    <div class="page-title">Informes</div>
+    <div class="page-subtitle">Estadísticas de tus partes · Curso ${escapeHtml(informesCursoSel())}</div>
+    ${informesFiltrosHTML(informesScopeList())}
+    <div id="infResultados"></div>
+  `;
+  setupInformesFiltros();
+  refrescarInformesResultados();
+}
+/* Cuerpo de la vista de informes del profesor (la zona #infResultados):
+ * se recalcula al cambiar cualquier filtro, sin repintar el panel. */
+function informesResultadosProfesorHTML(scope){
+  const myPartes = scope;
+  // Se aplican los filtros de la vista (curso + período + búsqueda/tipo/grupo/estado)
   const partesCurso = filtrarPartesInforme(myPartes);
   const partesOrdenados = [...partesCurso].sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
 
@@ -5295,12 +5369,7 @@ function renderInformesProfesor(c, cursoActivo){
   const alumnosUnicos = [...new Set(partesCurso.map(p => p.alumnoNombre).filter(Boolean))].sort();
   const gruposUnicos = [...new Set(partesCurso.map(p => p.grupo).filter(Boolean))].sort();
 
-  c.innerHTML = `
-    <div class="page-title">Informes</div>
-    <div class="page-subtitle">Estadísticas de tus partes · Curso ${escapeHtml(informesCursoSel())}</div>
-
-    ${informesFiltrosHTML(myPartes)}
-
+  return `
     <div class="card">
       <div class="card-title"><span>📊 Resumen general</span></div>
       <div class="stats-grid">
@@ -5356,9 +5425,6 @@ function renderInformesProfesor(c, cursoActivo){
       </div>
     </div>
   `;
-  setupInformesFiltros();
-  infProfAlumnoSetup();
-  infProfGrupoSetup();
 }
 
 window.generarPDFProfesorGeneral = () => {
@@ -5376,7 +5442,7 @@ window.generarPDFProfesorGeneral = () => {
   myPartes.forEach(p => { porConducta[p.conductaId] = (porConducta[p.conductaId]||0)+1; });
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de partes', `Profesor: ${currentUser.nombre}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de partes', `Profesor: ${currentUser.nombre}`, `Curso ${cursoActivo} · ${informesFiltrosActivosTexto()} · Generado el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen general</h3>
       <div class="stat-grid">
@@ -5405,7 +5471,7 @@ window.generarPDFProfesorGeneral = () => {
     </div>
   `;
   // Nombre de archivo con el contenido: informe + profesor + curso + período
-  imprimirInforme(`Informe_partes_${sanitizeFilename(currentUser.nombre||'profesor')}_${cursoActivo}_${informesPeriodoFilename()}`);
+  imprimirInforme(`Informe_partes_${sanitizeFilename(currentUser.nombre||'profesor')}_${cursoActivo}_${informesPeriodoFilename()}${informesFiltrosFilenameSuffix()}`);
 };
 
 window.infProfAlumnoChange = () => {
@@ -5437,7 +5503,7 @@ window.generarPDFProfesorAlumno = (alumno) => {
   const cerrados = partes.filter(p=>p.estado==='cerrado').length;
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de partes por alumno', `${alumno}`, `Profesor: ${currentUser.nombre} · Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de partes por alumno', `${alumno}`, `Profesor: ${currentUser.nombre} · Curso ${cursoActivo} · ${informesFiltrosActivosTexto()} · Generado el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen</h3>
       <div class="stat-grid">
@@ -5457,7 +5523,7 @@ window.generarPDFProfesorAlumno = (alumno) => {
     </div>
   `;
   // Nombre de archivo con el contenido: alumno + profesor + curso + período
-  imprimirInforme(`Informe_alumno_${sanitizeFilename(alumno)}_de_${sanitizeFilename(currentUser.nombre||'profesor')}_${cursoActivo}_${informesPeriodoFilename()}`);
+  imprimirInforme(`Informe_alumno_${sanitizeFilename(alumno)}_de_${sanitizeFilename(currentUser.nombre||'profesor')}_${cursoActivo}_${informesPeriodoFilename()}${informesFiltrosFilenameSuffix()}`);
 };
 
 window.infProfGrupoChange = () => {
@@ -5487,7 +5553,7 @@ window.generarPDFProfesorGrupo = (grupo) => {
   partes.forEach(p => { porAlumno[p.alumnoNombre] = (porAlumno[p.alumnoNombre]||0)+1; });
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de partes por grupo', `Grupo: ${grupo}`, `Profesor: ${currentUser.nombre} · Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de partes por grupo', `Grupo: ${grupo}`, `Profesor: ${currentUser.nombre} · Curso ${cursoActivo} · ${informesFiltrosActivosTexto()} · Generado el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen</h3>
       <div class="stat-grid">
@@ -5509,7 +5575,7 @@ window.generarPDFProfesorGrupo = (grupo) => {
     </div>
   `;
   // Nombre de archivo con el contenido: grupo + profesor + curso + período
-  imprimirInforme(`Informe_grupo_${sanitizeFilename(grupo)}_de_${sanitizeFilename(currentUser.nombre||'profesor')}_${cursoActivo}_${informesPeriodoFilename()}`);
+  imprimirInforme(`Informe_grupo_${sanitizeFilename(grupo)}_de_${sanitizeFilename(currentUser.nombre||'profesor')}_${cursoActivo}_${informesPeriodoFilename()}${informesFiltrosFilenameSuffix()}`);
 };
 
 /* === Parte completo para iPasen === */
@@ -5620,7 +5686,7 @@ window.generarPDFProfesorTodosPartesCompletos = () => {
   // por lo que en la práctica solo llegaba el primer archivo.
   $('printContainer').innerHTML = partes.map(p => printParteCompleto(p, cursoActivo)).join('');
   const nombreProfesor = sanitizeFilename(currentUser.nombre || 'profesor');
-  imprimirInforme(`Notificaciones_${nombreProfesor}_${cursoActivo}_${informesPeriodoFilename()}`);
+  imprimirInforme(`Notificaciones_${nombreProfesor}_${cursoActivo}_${informesPeriodoFilename()}${informesFiltrosFilenameSuffix()}`);
 };
 
 /* === INFORMES DEL TUTOR === */
@@ -5630,17 +5696,24 @@ function renderInformesTutor(c, cursoActivo){
     c.innerHTML = `<div class="page-title">Informes</div><div class="empty-state"><p>No tienes grupo de tutoría asignado.</p></div>`;
     return;
   }
-  const partesTutoriaBase = cachedPartes.filter(p => normalizeGrupo(p.grupo) === normalizeGrupo(tutoriaGrupo));
-  // Se aplican los filtros de la vista (curso seleccionado + período)
-  const partesTutoria = filtrarPartesInforme(partesTutoriaBase);
-  const alumnosUnicos = [...new Set(partesTutoria.map(p => p.alumnoNombre).filter(Boolean))].sort();
-
   c.innerHTML = `
     <div class="page-title">Informes</div>
     <div class="page-subtitle">Tutoría: ${escapeHtml(tutoriaGrupo)} · Curso ${escapeHtml(informesCursoSel())}</div>
+    ${informesFiltrosHTML(informesScopeList(), false)}
+    <div id="infResultados"></div>
+  `;
+  setupInformesFiltros();
+  refrescarInformesResultados();
+}
+/* Cuerpo de la vista de informes del tutor (la zona #infResultados). */
+function informesResultadosTutorHTML(scope){
+  const tutoriaGrupo = getEffectiveTutoriaGrupo();
+  const partesTutoriaBase = scope;
+  // Se aplican los filtros de la vista (curso + período + búsqueda/tipo/estado)
+  const partesTutoria = filtrarPartesInforme(partesTutoriaBase);
+  const alumnosUnicos = [...new Set(partesTutoria.map(p => p.alumnoNombre).filter(Boolean))].sort();
 
-    ${informesFiltrosHTML(partesTutoriaBase)}
-
+  return `
     <div class="card">
       <div class="card-title"><span>📊 Estadística general de la tutoría</span></div>
       <div class="stats-grid">
@@ -5665,8 +5738,6 @@ function renderInformesTutor(c, cursoActivo){
       <div id="infTutorAlumnoResult"></div>
     </div>
   `;
-  setupInformesFiltros();
-  infTutorAlumnoSetup();
 }
 
 window.generarPDFTutorGeneral = () => {
@@ -5681,7 +5752,7 @@ window.generarPDFTutorGeneral = () => {
   partes.forEach(p => { porProfesor[p.profesorNombre||'—'] = (porProfesor[p.profesorNombre||'—']||0)+1; });
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de tutoría', `Grupo: ${tutoriaGrupo}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de tutoría', `Grupo: ${tutoriaGrupo}`, `Curso ${cursoActivo} · ${informesFiltrosActivosTexto()} · Generado el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen general</h3>
       <div class="stat-grid">
@@ -5722,7 +5793,7 @@ window.generarPDFTutorGeneral = () => {
     </div>
   `;
   // Nombre de archivo con el contenido: tutoría + curso + período
-  imprimirInforme(`Informe_tutoria_${sanitizeFilename(tutoriaGrupo||'grupo')}_${cursoActivo}_${informesPeriodoFilename()}`);
+  imprimirInforme(`Informe_tutoria_${sanitizeFilename(tutoriaGrupo||'grupo')}_${cursoActivo}_${informesPeriodoFilename()}${informesFiltrosFilenameSuffix()}`);
 };
 
 window.infTutorAlumnoChange = () => {
@@ -5751,7 +5822,7 @@ window.generarPDFTutorAlumno = (alumno) => {
     .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de alumno', `${alumno} · Grupo ${tutoriaGrupo}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de alumno', `${alumno} · Grupo ${tutoriaGrupo}`, `Curso ${cursoActivo} · ${informesFiltrosActivosTexto()} · Generado el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen</h3>
       <div class="stat-grid">
@@ -5771,24 +5842,34 @@ window.generarPDFTutorAlumno = (alumno) => {
     </div>
   `;
   // Nombre de archivo con el contenido: alumno + tutoría + curso + período
-  imprimirInforme(`Informe_alumno_${sanitizeFilename(alumno)}_tutoria_${sanitizeFilename(tutoriaGrupo||'grupo')}_${cursoActivo}_${informesPeriodoFilename()}`);
+  imprimirInforme(`Informe_alumno_${sanitizeFilename(alumno)}_tutoria_${sanitizeFilename(tutoriaGrupo||'grupo')}_${cursoActivo}_${informesPeriodoFilename()}${informesFiltrosFilenameSuffix()}`);
 };
 
 /* === INFORMES DEL ADMIN === */
 function renderInformesAdmin(c, cursoActivo){
-  // Se aplican los filtros de la vista (curso seleccionado + período)
-  const todasPartes = filtrarPartesInforme(cachedPartes);
+  c.innerHTML = `
+    <div class="page-title">Informes</div>
+    <div class="page-subtitle">Estadísticas y consultas del centro · Curso ${escapeHtml(informesCursoSel())}</div>
+    ${informesFiltrosHTML(informesScopeList())}
+    <div id="infResultados"></div>
+    ${diagnosticoPartesHTML()}
+  `;
+  setupInformesFiltros();
+  refrescarInformesResultados();
+}
+/* Cuerpo de la vista de informes del admin (la zona #infResultados):
+ * estadísticas generales, listado completo de partes (la antigua
+ * sección "Todos") e informes por alumno, grupo y profesor. */
+function informesResultadosAdminHTML(scope){
+  // Se aplican los filtros de la vista (curso + período + búsqueda/tipo/grupo/estado)
+  const todasPartes = filtrarPartesInforme(scope);
+  const listado = [...todasPartes].sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
   const alumnosUnicos = [...new Set(todasPartes.map(p => p.alumnoNombre).filter(Boolean))].sort();
   const gruposUnicos = [...new Set(todasPartes.map(p => p.grupo).filter(Boolean))].sort();
   const profesoresUnicos = [...new Set(todasPartes.map(p => p.profesorNombre).filter(Boolean))].sort();
   const sinResultados = todasPartes.length === 0;
 
-  c.innerHTML = `
-    <div class="page-title">Informes</div>
-    <div class="page-subtitle">Estadísticas del centro · Curso ${escapeHtml(informesCursoSel())}</div>
-
-    ${informesFiltrosHTML(cachedPartes)}
-
+  return `
     <div class="card">
       <div class="card-title"><span>📊 Estadística general del centro</span></div>
       <div class="stats-grid">
@@ -5798,6 +5879,15 @@ function renderInformesAdmin(c, cursoActivo){
         <div class="stat-card accent"><div class="stat-value">${todasPartes.filter(p=>p.tipo==='CGPC').length}</div><div class="stat-label">CGPC</div></div>
       </div>
       <button class="btn btn-primary btn-sm" onclick="generarPDFAdminGeneral()">📄 Exportar informe general a PDF</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>📋 Todos los partes (${listado.length})</span>
+        <button class="btn btn-primary btn-sm" onclick="generarPDFTodosPartes()" title="Genera un informe A4 en PDF con los partes que se muestran ahora mismo en esta lista (respeta todos los filtros aplicados)">⬇️ Descargar PDF</button>
+      </div>
+      <p style="font-size:13px;color:var(--c-text-muted);margin-bottom:10px">${sinResultados ? 'No hay partes que coincidan con los filtros seleccionados: prueba a cambiar el período o la búsqueda, o quita filtros.' : 'Listado completo del curso activo en orden cronológico inverso. Pulsa un parte para ver su detalle; la exportación a PDF respeta todos los filtros aplicados.'}</p>
+      ${listado.length === 0 ? `<div class="empty-state"><p>No hay partes que coincidan con el filtro.</p></div>` : listado.map(p => renderParteCard(p)).join('')}
     </div>
 
     <div class="card">
@@ -5839,13 +5929,54 @@ function renderInformesAdmin(c, cursoActivo){
       <div id="infAdminProfesorResult"></div>
     </div>
 
-    ${diagnosticoPartesHTML()}
   `;
-  setupInformesFiltros();
-  infAdminAlumnoSetup();
-  infAdminGrupoSetup();
-  infAdminProfesorSetup();
 }
+
+/* "⬇️ Descargar PDF" de la tarjeta "📋 Todos los partes" (sección
+ * Informes, perfil admin): genera un informe A4 con el contenido que
+ * se muestra en ese momento en la lista, respetando TODOS los filtros
+ * del panel (período, búsqueda, tipo, grupo y estado). */
+window.generarPDFTodosPartes = () => {
+  const cursoActivo = informesCursoSel();
+  const list = filtrarPartesInforme(informesScopeList())
+    .sort((a,b)=>(fechaIncidenteTs(b)||0)-(fechaIncidenteTs(a)||0));
+  if(list.length === 0){ toast('No hay partes que coincidan con los filtros: no se puede exportar un informe vacío.','error'); return; }
+
+  // Resumen de los filtros aplicados (para la cabecera y el nombre del archivo)
+  const filtrosTexto = informesFiltrosActivosTexto();
+
+  const grupos = [...new Set(list.map(p => p.grupo).filter(Boolean))];
+  const alumnos = [...new Set(list.map(p => p.alumnoNombre).filter(Boolean))];
+  const profesores = [...new Set(list.map(p => p.profesorNombre).filter(Boolean))];
+
+  $('printContainer').innerHTML = `
+    ${printHeader('Todos los partes', `${list.length} parte${list.length===1?'':'s'} en el centro`, `Curso ${cursoActivo} · Filtros: ${filtrosTexto} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
+    <div class="print-section">
+      <h3>Resumen del listado</h3>
+      <div class="stat-grid">
+        ${printStatBox(list.length, 'Total partes')}
+        ${printStatBox(list.filter(p=>p.estado!=='cerrado').length, 'Abiertos')}
+        ${printStatBox(list.filter(p=>p.estado==='cerrado').length, 'Cerrados')}
+        ${printStatBox(list.filter(p=>p.tipo==='CCNC').length, 'CCNC')}
+        ${printStatBox(list.filter(p=>p.tipo==='CGPC').length, 'CGPC')}
+        ${printStatBox(grupos.length, 'Grupos')}
+        ${printStatBox(alumnos.length, 'Alumnos')}
+        ${printStatBox(profesores.length, 'Profesores')}
+      </div>
+    </div>
+    <div class="print-section">
+      <h3>Filtros aplicados</h3>
+      <div style="font-size:12px;color:#52606d">${escapeHtml(filtrosTexto)}</div>
+    </div>
+    <div class="print-section">
+      <h3>Listado de partes (orden cronológico inverso)</h3>
+      ${list.map(p => printParteItem(p)).join('')}
+    </div>
+  `;
+
+  // Nombre de archivo con información del contenido: curso + período + filtros activos
+  imprimirInforme(`Todos_los_partes_${cursoActivo}_${informesPeriodoFilename()}${informesFiltrosFilenameSuffix()}`);
+};
 
 window.generarPDFAdminGeneral = () => {
   const cursoActivo = informesCursoSel();
@@ -5858,7 +5989,7 @@ window.generarPDFAdminGeneral = () => {
   const porAgravante = {}; partes.forEach(p => { (p.agravantes||[]).forEach(a => { porAgravante[a] = (porAgravante[a]||0)+1; }); });
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe general del centro', `Curso ${cursoActivo} · ${informesPeriodoLabel()}`, `Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe general del centro', `Curso ${cursoActivo} · ${informesFiltrosActivosTexto()}`, `Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen general</h3>
       <div class="stat-grid">
@@ -5935,7 +6066,7 @@ window.generarPDFAdminGeneral = () => {
     </div>` : ''}
   `;
   // Nombre de archivo con el contenido: informe del centro + curso + período
-  imprimirInforme(`Informe_general_centro_${cursoActivo}_${informesPeriodoFilename()}`);
+  imprimirInforme(`Informe_general_centro_${cursoActivo}_${informesPeriodoFilename()}${informesFiltrosFilenameSuffix()}`);
 };
 
 window.infAdminAlumnoChange = () => {
@@ -5964,7 +6095,7 @@ window.generarPDFAdminAlumno = (alumno) => {
   const grupoArchivo = sanitizeFilename(grupo !== '—' ? (grupo||'') : '');
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de alumno', `${alumno} · Grupo ${grupo}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de alumno', `${alumno} · Grupo ${grupo}`, `Curso ${cursoActivo} · ${informesFiltrosActivosTexto()} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen</h3>
       <div class="stat-grid">
@@ -5990,7 +6121,7 @@ window.generarPDFAdminAlumno = (alumno) => {
     </div>
   `;
   // Nombre de archivo con el contenido: alumno + grupo + curso + período
-  imprimirInforme(`Informe_alumno_${sanitizeFilename(alumno)}_${grupoArchivo||'sin-grupo'}_${cursoActivo}_${informesPeriodoFilename()}`);
+  imprimirInforme(`Informe_alumno_${sanitizeFilename(alumno)}_${grupoArchivo||'sin-grupo'}_${cursoActivo}_${informesPeriodoFilename()}${informesFiltrosFilenameSuffix()}`);
 };
 
 window.infAdminGrupoChange = () => {
@@ -6019,7 +6150,7 @@ window.generarPDFAdminGrupo = (grupo) => {
   const porProfesor = {}; partes.forEach(p => { porProfesor[p.profesorNombre||'—'] = (porProfesor[p.profesorNombre||'—']||0)+1; });
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de grupo', `Grupo: ${grupo}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de grupo', `Grupo: ${grupo}`, `Curso ${cursoActivo} · ${informesFiltrosActivosTexto()} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen</h3>
       <div class="stat-grid">
@@ -6054,7 +6185,7 @@ window.generarPDFAdminGrupo = (grupo) => {
     </div>
   `;
   // Nombre de archivo con el contenido: grupo + curso + período
-  imprimirInforme(`Informe_grupo_${sanitizeFilename(grupo)||'sin-grupo'}_${cursoActivo}_${informesPeriodoFilename()}`);
+  imprimirInforme(`Informe_grupo_${sanitizeFilename(grupo)||'sin-grupo'}_${cursoActivo}_${informesPeriodoFilename()}${informesFiltrosFilenameSuffix()}`);
 };
 
 window.infAdminProfesorChange = () => {
@@ -6083,7 +6214,7 @@ window.generarPDFAdminProfesor = (profesor) => {
   const porGrupo = {}; partes.forEach(p => { if(p.grupo) porGrupo[p.grupo] = (porGrupo[p.grupo]||0)+1; });
 
   $('printContainer').innerHTML = `
-    ${printHeader('Informe de profesor', `${profesor}`, `Curso ${cursoActivo} · ${informesPeriodoLabel()} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
+    ${printHeader('Informe de profesor', `${profesor}`, `Curso ${cursoActivo} · ${informesFiltrosActivosTexto()} · Generado por ${currentUser.nombre} el ${fmtFechaHora(Date.now())}`)}
     <div class="print-section">
       <h3>Resumen</h3>
       <div class="stat-grid">
@@ -6115,7 +6246,7 @@ window.generarPDFAdminProfesor = (profesor) => {
     </div>
   `;
   // Nombre de archivo con el contenido: profesor + curso + período
-  imprimirInforme(`Informe_profesor_${sanitizeFilename(profesor)}_${cursoActivo}_${informesPeriodoFilename()}`);
+  imprimirInforme(`Informe_profesor_${sanitizeFilename(profesor)}_${cursoActivo}_${informesPeriodoFilename()}${informesFiltrosFilenameSuffix()}`);
 };
 
 /* ===== Notifications ===== */
