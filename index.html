@@ -6953,21 +6953,16 @@ setTimeout(showLoginScreenIfNeeded, 2500);
 </script>
 
 <script>
+/* PWA: registro del Service Worker.
+ * El registro es relativo ('sw.js'), así que el ámbito (scope) del SW
+ * queda limitado a la carpeta donde esté desplegada la app. Esto es lo
+ * que permite conviver con el portal https://iesvilladiego.github.io en
+ * el mismo dominio: el SW solo controla páginas dentro de su carpeta y
+ * nunca interfiere con las del portal, y ambas PWA se pueden instalar
+ * por separado (manifests y scopes independientes). */
 if('serviceWorker' in navigator){
   window.addEventListener('load', function(){
-    navigator.serviceWorker.register('sw.js').then(function(reg){
-      console.log('SW registered:', reg.scope);
-    }).catch(function(err){
-      console.log('SW registration failed:', err);
-    });
-  });
-}
-</script>
-
-<script>
-if('serviceWorker' in navigator){
-  window.addEventListener('load', function(){
-    navigator.serviceWorker.register('sw.js').then(function(reg){
+    navigator.serviceWorker.register('sw.js', { scope: './' }).then(function(reg){
       console.log('SW registered:', reg.scope);
     }).catch(function(err){
       console.log('SW registration failed:', err);
